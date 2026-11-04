@@ -2409,6 +2409,27 @@ class WarehouseModel extends BaseModel {
                     ]);
             }
 
+            // ── Item change cascade: re-point the lot + production log to the NEW
+            // item's PO line, and move the produced quantity across SOH rows.
+            if ($item_changed) {
+                $effectiveLot = $new_lot_number;
+
+                // Re-point every active lot row of the edited lot to this record's
+                // PO line under the NEW item — production_lots IS the
+                // delivery-availability source, so Deliveries sees the lot for the
+                // right item right away.
+                $conn->prepare("UPDATE production_lots
+                    SET item_id = :new_item
+                    WHERE (poi_id = :poi_id OR (poi_id IS NULL AND item_id = :old_item))
+                      AND lot_number = :lot AND `is_removed` = 0")
+                    ->execute([
+                        'new_item' => $new_item_id,
+                        'poi_id' => $history['poi_id'] ?: 0,
+                        'old_item' => $old_item_id ?: 0,
+                        'lot' => $effectiveLot,
+                    ]);
+            }
+
             $conn->commit();
             return true;
         } catch (\Exception $e) {
