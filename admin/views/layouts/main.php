@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -6,6 +6,9 @@
     <title><?= $page_title ?? 'Admin Dashboard' ?></title>
     <link href="public/css/bootstrap.min.css" rel="stylesheet">
     <link href="public/css/bootstrap-icons.min.css" rel="stylesheet">
+    <link href="public/css/sweetalert2.min.css" rel="stylesheet">
+    <script src="public/js/sweetalert2.min.js"></script>
+    <script src="public/js/dialogs.js"></script>
     <link href="public/css/style.css" rel="stylesheet">
     <style>
         :root {
@@ -158,6 +161,14 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a class="nav-link <?= in_array($currentAction, ['approvals', 'approvePoDraft', 'rejectPoDraft', 'approveOverageRequest', 'rejectOverageRequest', 'approveMrpRunDraft', 'rejectMrpRunDraft']) ? 'active' : '' ?>" href="?controller=admin&action=approvals">
+                            <i class="bi bi-shield-check me-2"></i>Approvals
+                            <?php if (!empty($approvalsCount)): ?>
+                            <span class="badge rounded-pill bg-danger ms-auto"><?= (int) $approvalsCount ?></span>
+                            <?php endif; ?>
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link <?= $currentAction === 'receivingPo' ? 'active' : '' ?>" href="?controller=admin&action=receivingPo">
                             <i class="bi bi-box-arrow-in-down me-2"></i>Receiving Purchasing PO
                         </a>
@@ -176,13 +187,23 @@
 </a>
 </li>
 <li class="nav-item">
-<a class="nav-link <?= in_array($currentAction, ['items', 'itemCreate', 'itemEdit', 'itemDelete', 'itemToggleStatus', 'itemUpdate']) ? 'active' : '' ?>" href="?controller=admin&action=items">
+<a class="nav-link <?= ($_GET['controller'] ?? 'admin') === 'admin' && in_array($currentAction, ['items', 'itemCreate', 'itemEdit', 'itemDelete', 'itemToggleStatus', 'itemUpdate']) ? 'active' : '' ?>" href="?controller=admin&action=items">
 <i class="bi bi-box-seam me-2"></i>Items
+</a>
+</li>
+<li class="nav-item">
+<a class="nav-link <?= ($_GET['controller'] ?? '') === 'warehouse' && $currentAction === 'items' ? 'active' : '' ?>" href="?controller=warehouse&action=items">
+<i class="bi bi-boxes me-2"></i>Item Master List
 </a>
 </li>
 <li class="nav-item">
 <a class="nav-link <?= $currentAction === 'activityLogs' ? 'active' : '' ?>" href="?controller=admin&action=activityLogs">
 <i class="bi bi-clock-history me-2"></i>Activity Logs
+</a>
+</li>
+<li class="nav-item">
+<a class="nav-link <?= in_array($currentAction, ['users', 'toggleApprover']) ? 'active' : '' ?>" href="?controller=admin&action=users">
+<i class="bi bi-people me-2"></i>Users &amp; Roles
 </a>
 </li>
 <li class="nav-item">

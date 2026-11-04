@@ -297,8 +297,8 @@ document.getElementById('saveAddItem').addEventListener('click', function() {
     var phaseCode = document.getElementById('add_phase_code').value.trim();
     var uom = document.getElementById('add_uom').value.trim();
 
-    if (!itemId) { alert('Select an ingredient'); return; }
-    if (!phaseCode) { alert('Phase / Comp Code is required'); return; }
+    if (!itemId) { Dlg.alert('Select an ingredient'); return; }
+    if (!phaseCode) { Dlg.alert('Phase / Comp Code is required'); return; }
 
     var formData = new FormData();
     formData.append('bom_id', bomId);
@@ -314,10 +314,10 @@ document.getElementById('saveAddItem').addEventListener('click', function() {
             if (data.success) {
                 location.reload();
             } else {
-                alert(data.error || 'Failed to add component');
+                Dlg.alert(data.error || 'Failed to add component');
             }
         })
-        .catch(function() { alert('Network error'); });
+        .catch(function() { Dlg.alert('Network error'); });
 });
 
 document.querySelectorAll('.edit-bom-item').forEach(function(btn) {
@@ -343,8 +343,8 @@ document.getElementById('saveEditItem').addEventListener('click', function() {
     var phaseCode = document.getElementById('edit_phase_code').value.trim();
     var uom = document.getElementById('edit_uom').value.trim();
 
-    if (!itemId) { alert('Select an ingredient'); return; }
-    if (!phaseCode) { alert('Phase / Comp Code is required'); return; }
+    if (!itemId) { Dlg.alert('Select an ingredient'); return; }
+    if (!phaseCode) { Dlg.alert('Phase / Comp Code is required'); return; }
 
     var formData = new FormData();
     formData.append('bom_item_id', bomItemId);
@@ -360,30 +360,32 @@ document.getElementById('saveEditItem').addEventListener('click', function() {
             if (data.success) {
                 location.reload();
             } else {
-                alert(data.error || 'Failed to update component');
+                Dlg.alert(data.error || 'Failed to update component');
             }
         })
-        .catch(function() { alert('Network error'); });
+        .catch(function() { Dlg.alert('Network error'); });
 });
 
 document.querySelectorAll('.remove-bom-item').forEach(function(btn) {
     btn.addEventListener('click', function() {
-        if (!confirm('Remove this component?')) return;
         var itemId = this.getAttribute('data-item-id');
-        var formData = new FormData();
-        formData.append('item_id', itemId);
+        Dlg.confirm('Remove this component?').then(function(ok) {
+            if (!ok) return;
+            var formData = new FormData();
+            formData.append('item_id', itemId);
 
-        fetch('?controller=admin&action=bomRemoveItem', { method: 'POST', body: formData })
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                if (data.success) {
-                    var row = document.querySelector('tr[data-item-id="' + itemId + '"]');
-                    if (row) row.remove();
-                } else {
-                    alert(data.error || 'Failed to remove');
-                }
-            })
-            .catch(function() { alert('Network error'); });
+            fetch('?controller=admin&action=bomRemoveItem', { method: 'POST', body: formData })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.success) {
+                        var row = document.querySelector('tr[data-item-id="' + itemId + '"]');
+                        if (row) row.remove();
+                    } else {
+                        Dlg.alert(data.error || 'Failed to remove');
+                    }
+                })
+                .catch(function() { Dlg.alert('Network error'); });
+        });
     });
 });
 </script>

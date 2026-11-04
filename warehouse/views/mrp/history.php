@@ -1,6 +1,23 @@
 <div class="d-flex justify-content-between align-items-center mb-4">
     <div>
-        <h4 class="mb-0"><i class="bi bi-clock-history me-2"></i>MRP Snapshot History</h4>
+        <h4 class="mb-0">
+            <i class="bi bi-clock-history me-2"></i>MRP Snapshot History
+            <?php
+            // Tracking badge: runs still awaiting a signature (any of the three gates).
+            $pendingApprovalRuns = [];
+            foreach (($runs ?? []) as $r) {
+                $st = $r['approval_statuses'] ?? [];
+                if (in_array('pending_whse_approval', $st, true) || in_array('pending_sysadmin_approval', $st, true) || in_array('pending_qc_approval', $st, true)) {
+                    $pendingApprovalRuns[$r['run_id']] = true;
+                }
+            }
+            if ($pendingApprovalRuns):
+            ?>
+            <span class="badge bg-warning text-dark ms-2" title="Runs still awaiting a signature — see the Status column">
+                <i class="bi bi-hourglass-split me-1"></i><?= count($pendingApprovalRuns) ?> awaiting approval
+            </span>
+            <?php endif; ?>
+        </h4>
         <?php if (!empty($poHeader)): ?>
         <small class="text-muted">
             PO: <?= htmlspecialchars($poHeader['customer_po_number'] ?? '') ?>
@@ -35,6 +52,7 @@
                     <?php endif; ?>
                     <th>Date Saved</th>
                     <th>Saved By</th>
+                    <th>Status</th>
                     <th>Items Captured</th>
                     <th>Actions</th>
                 </tr>
@@ -42,7 +60,7 @@
             <tbody>
                 <?php if (empty($runs)): ?>
                 <tr>
-                    <td colspan="<?= empty($selectedPO) ? 8 : 6 ?>" class="text-center text-muted py-4">No snapshots saved yet.</td>
+                    <td colspan="<?= empty($selectedPO) ? 9 : 7 ?>" class="text-center text-muted py-4">No snapshots saved yet.</td>
                 </tr>
                 <?php else: ?>
                 <?php foreach ($runs as $r): ?>
@@ -56,6 +74,12 @@
                     <td><?= date('m/d/Y h:i A', strtotime($r['date_created'])) ?></td>
                     <td><?= htmlspecialchars($r['user_name'] ?? '') ?></td>
                     <td>
+                        <?php $runStatusLabel = $r['approval_label'] ?? 'No Requisitions'; ?>
+                        <span class="badge <?= $r['approval_badge'] ?? 'bg-secondary' ?>" title="Linked requisition states: <?= htmlspecialchars(implode(', ', $r['approval_statuses'] ?? [])) ?: 'none' ?>">
+                            <?= htmlspecialchars($runStatusLabel) ?>
+                        </span>
+                    </td>
+                    <td>
                         <span class="badge bg-info" id="itemCount<?= $r['run_id'] ?>">Loading...</span>
                     </td>
                     <td>
@@ -63,12 +87,10 @@
                             <button class="btn btn-outline-primary view-snapshot-btn" data-run-id="<?= $r['run_id'] ?>" title="View Details">
                                 <i class="bi bi-eye"></i>
                             </button>
-                            <?php if (!empty($r['po_id'])): ?>
-                            <a href="?controller=warehouse&action=mrpSnapshotPDF&run_id=<?= $r['run_id'] ?>" class="btn btn-outline-danger" title="Print PDF" target="_blank">
+                            <a href="?controller=warehouse&action=mrpSnapshotPrint&run_id=<?= $r['run_id'] ?>" class="btn btn-outline-danger" title="Print" target="_blank">
                                 <i class="bi bi-printer"></i>
                             </a>
-                            <?php endif; ?>
-                            <a href="?controller=warehouse&action=deleteMrpRun&run_id=<?= $r['run_id'] ?>&po_id=<?= $selectedPO ?? '' ?>" class="btn btn-outline-danger" title="Delete" onclick="return confirm('Delete this snapshot? Its unfulfilled purchase requests will be removed too.')">
+                            <a href="?controller=warehouse&action=deleteMrpRun&run_id=<?= $r['run_id'] ?>&po_id=<?= $selectedPO ?? '' ?>" class="btn btn-outline-danger" title="Delete" data-confirm="Delete this snapshot? Its unfulfilled purchase requests will be removed too.">
                                 <i class="bi bi-trash"></i>
                             </a>
                         </div>
@@ -124,7 +146,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         return;
                     }
                     var html = '<table class="table table-sm table-bordered"><thead><tr>' +
-                        '<th>FG Code</th><th>Component</th><th>UoM</th>' +
+                        '<th>Item Code</th><th>DESCRIPTION</th><th>UoM</th>' +
                         '<th class="text-end">Total Reqt</th><th class="text-end">SOH</th>' +
                         '<th class="text-end">Open Customer PO / Allocated</th><th class="text-end">Pending PO/RR</th>' +
                         '<th class="text-end">Excess</th><th>Remarks</th></tr></thead><tbody>';
@@ -133,7 +155,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         var isLacking = String(row.excess || '').trim().charAt(0) === '-';
                         var excessClass = isLacking ? 'text-danger fw-bold' : 'text-success fw-bold';
                         html += '<tr>' +
-                            '<td><code>' + (row.fg_code || '') + '</code></td>' +
+                            '<td><code>' + (row.component_code || '') + '</code></td>' +
                             '<td>' + (row.component_name || '') + '</td>' +
                             '<td>' + (row.component_uom || '') + '</td>' +
                             '<td class="text-end">' + (row.total_reqt || '0') + '</td>' +

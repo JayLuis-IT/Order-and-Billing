@@ -10,6 +10,7 @@ use App\Helpers\Pagination;
 use App\Helpers\NotificationHelper;
 use App\Helpers\SpreadsheetReader;
 use App\Helpers\XlsxExport;
+use App\Helpers\RoleHelper;
 
 class WarehouseController {
     private $warehouseModel;
@@ -23,20 +24,56 @@ class WarehouseController {
             exit;
         }
         $action = $_GET['action'] ?? '';
+        // index.php defaults the action to 'login'; missing/unknown action
+        // dispatches to index() — mirror that for the permission gates.
+        if ($action === '' || $action === 'login') {
+            $action = 'index';
+        }
         $dept = $_SESSION['department'] ?? '';
-        $mrpAllowed = in_array($action, ['mrp', 'mrpPDF', 'saveMrpCalculation', 'getNextMrpRef']) && in_array($dept, ['warehouse', 'rnd', 'admin']);
+        $mrpAllowed = in_array($action, ['mrp', 'mrpPDF', 'saveMrpCalculation', 'getNextMrpRef', 'mrpSnapshotPrint']) && in_array($dept, ['warehouse', 'rnd', 'admin']);
         $apiActions = ['getPODetails', 'getItemsByCustomer', 'backloadDelivery', 'getDeliveryLotsForBackload',
             'getLotsByPOItem', 'getPOItemsForAssignment', 'getActivePOsForAssignment', 'getLotsForTransfer',
             'viewBackloads', 'getPOsContainingItem', 'getAvailableItemsForDelivery', 'searchItems',
             'mrpRunDetail', 'purchasingPo', 'receivingPo', 'lmrEntry', 'getCustomerPOs', 'getItemBomInfo', 'getItemBalances',
-            'getPoFullDetails', 'getSuppliers', 'getItemBoms', 'getBomComponents'];
-        // Item Master List is viewable read-only by rnd/admin; only warehouse can create/import items
+            'getPoFullDetails', 'getSuppliers', 'getItemBoms', 'getBomComponents', 'printPurchasingPo'];
+        // Item Master List is viewable read-only by rnd/admin; only warehouse
+        // roles can open it too (role gate below strips edit for all of them).
         $itemListReadOnly = $action === 'items' && in_array($dept, ['warehouse', 'rnd', 'admin']);
+        // Item master editing (create/import/adjust SOH) is System Admin only.
+        $itemManageAllowed = in_array($action, ['storeItem', 'adjustItemSoh', 'itemImportForm', 'itemImportPreview', 'itemImportConfirm'])
+            && $dept === 'admin';
         // Edit modal (metadata-only corrections) is shared with QC for inspected records
         $poEditAllowed = $action === 'updatePurchasingPo' && in_array($dept, ['warehouse', 'qc']);
-        if (!$itemListReadOnly && !$mrpAllowed && !$poEditAllowed && !in_array($action, $apiActions) && $dept !== 'warehouse') {
-            header('Location: ?controller=admin');
+        if (!$itemListReadOnly && !$itemManageAllowed && !$mrpAllowed && !$poEditAllowed && !in_array($action, $apiActions) && $dept !== 'warehouse') {
+            header('Location: ' . RoleHelper::homeUrl());
             exit;
+        }
+        // Role gate: warehouse users only reach actions allowed for their role.
+        if ($dept === 'warehouse') {
+            $role = RoleHelper::currentRole();
+            if ($role === null) {
+                header('Location: ?controller=auth&action=noRole');
+                exit;
+            }
+            if (!RoleHelper::warehouseCan($role, $action)) {
+                $_SESSION['error'] = 'You do not have access to that feature.';
+                header('Location: ' . RoleHelper::homeUrl());
+                exit;
+            }
+        }
+        // QC cross-module access (receiving/purchasing PO views + MRP Check
+        // run review) is qc_admin only.
+        if ($dept === 'qc') {
+            $qcRole = RoleHelper::currentRole();
+            $qcWarehouseActions = ['receivingPo', 'purchasingPo', 'updatePurchasingPo', 'getPoFullDetails', 'getSuppliers', 'mrpRunDetail', 'printPurchasingPo'];
+            if ($qcRole !== 'qc_admin' || !in_array($action, $qcWarehouseActions, true)) {
+                if (!in_array($action, ['getPODetails', 'getItemsByCustomer', 'getCustomerPOs', 'getItemBomInfo',
+                    'getItemBalances', 'searchItems', 'getItemBoms', 'getBomComponents', 'getLotsByPOItem'], true)) {
+                    $_SESSION['error'] = 'You do not have access to that feature.';
+                    header('Location: ' . RoleHelper::homeUrl());
+                    exit;
+                }
+            }
         }
         $this->warehouseModel = new WarehouseModel();
         $this->backloadModel = new BackloadModel();
@@ -45,27 +82,61 @@ class WarehouseController {
     }
 
     private function redirectToRoleHome(string $action): void {
-        $department = $_SESSION['department'] ?? 'warehouse';
-        $controller = ($department === 'admin') ? 'admin' : 'warehouse';
-        header('Location: ?controller=' . $controller . '&action=' . $action);
+        header('Location: ' . RoleHelper::homeUrl());
         exit;
     }
 
     private function enforceReadOnlyPurchasingPo(): void {
-        if (($_SESSION['department'] ?? '') !== 'warehouse') {
+        // QC reaches updatePurchasingPo via its own inline dept check; every
+        // other mutating purchasing-PO action is warehouse roles only.
+        $role = ($_SESSION['department'] === 'warehouse') ? RoleHelper::currentRole() : null;
+        if (!in_array($role, ['whse_admin', 'whse_procurement'], true)) {
             $_SESSION['error'] = 'Purchasing PO is read-only for this role.';
             $this->redirectToRoleHome('purchasingPo');
         }
     }
 
     private function enforceWarehouseReceivingAccess(): void {
-        if (($_SESSION['department'] ?? '') !== 'warehouse') {
-            $_SESSION['error'] = 'Only warehouse users can receive purchasing shipments.';
+        $role = ($_SESSION['department'] === 'warehouse') ? RoleHelper::currentRole() : ($_SESSION['department'] ?? '');
+        if (!in_array($role, ['whse_admin', 'whse_officer'], true)) {
+            $_SESSION['error'] = 'Only warehouse admin/officer users can receive purchasing shipments.';
             $this->redirectToRoleHome('receivingPo');
         }
     }
 
     public function index() {
+        $role = (($_SESSION['department'] ?? '') === 'warehouse') ? RoleHelper::currentRole() : null;
+
+        if ($role === 'whse_officer') {
+            $data['page_title'] = 'Warehouse Officer Dashboard';
+            $data['tabCounts'] = $this->warehouseModel->getReceivingTabCounts();
+            $data['deliveries'] = $this->warehouseModel->getDeliveries();
+            $data['deliveryReportsCount'] = $this->warehouseModel->getDeliveryReportsCount();
+            $this->render('dashboards/officer', $data);
+            return;
+        }
+        if ($role === 'whse_ppic') {
+            $data['page_title'] = 'Warehouse PPIC Dashboard';
+            $data['purchase_orders'] = $this->warehouseModel->getActivePOsForDashboard(5);
+            $poIds = array_column($data['purchase_orders'], 'po_id');
+            $data['po_items_map'] = $this->warehouseModel->getPurchaseOrderItemsByPOIds($poIds);
+            $this->render('dashboards/ppic', $data);
+            return;
+        }
+        if ($role === 'whse_procurement') {
+            $data['page_title'] = 'Warehouse Procurement Dashboard';
+            $data['procurementCounts'] = $this->warehouseModel->getProcurementStatusCounts();
+            $this->render('dashboards/procurement', $data);
+            return;
+        }
+        if ($role === 'whse_receiving') {
+            $data['page_title'] = 'Warehouse Receiving Dashboard';
+            $data['recentMovements'] = $this->warehouseModel->getStockMovements(10);
+            $data['tabCounts'] = $this->warehouseModel->getReceivingTabCounts();
+            $this->render('dashboards/receiving', $data);
+            return;
+        }
+
         $data['page_title'] = 'Warehouse Dashboard';
         $data['customers'] = $this->catalogModel->getCustomers();
         $data['items'] = $this->catalogModel->getItems();
@@ -2101,8 +2172,13 @@ class WarehouseController {
             if ($fgItemId <= 0 || $targetQty <= 0) {
                 throw new \RuntimeException('Select a finished good and enter a target quantity first.');
             }
-            if (!is_array($postedLacking) || empty($postedLacking)) {
-                throw new \RuntimeException('No lacking items to transfer.');
+            // Saving with zero lackings is allowed (pure planning snapshot:
+            // run lands in MRP History, no purchase requests are queued).
+            if ($postedLacking === null) {
+                $postedLacking = [];
+            }
+            if (!is_array($postedLacking)) {
+                throw new \RuntimeException('Invalid lacking payload.');
             }
             // The MRP reference is generated server-side (MRP#YYYY-XXXX) inside
             // the save transaction — no user input to validate here.
@@ -2167,8 +2243,11 @@ class WarehouseController {
                 }
             }
             $targets = array_intersect_key($recomputed, $postedIds);
-            if (empty($targets)) {
-                throw new \RuntimeException('Nothing lacking for this calculation.');
+            if (empty($postedIds) === false && empty($targets)) {
+                // The client posted lackings but recomputation found none
+                // (stale page) — block with a clear message instead of
+                // silently saving an empty requisition set.
+                throw new \RuntimeException('Nothing lacking for this calculation — recalculate and try again.');
             }
 
             // Logs the run to MRP Snapshot History, commits stock to
@@ -2184,8 +2263,27 @@ class WarehouseController {
                 $bom['bom_id']
             );
 
-            $_SESSION['success'] = "MRP Run {$result['mrp_ref']} (#{$result['run_id']}) saved — stock committed for {$result['committed']} component(s); "
-                . "{$result['queued']} purchase request(s) queued for Procurement.";
+            $zeroLacking = !empty($result['zero_lacking']);
+            if (!$zeroLacking) {
+                $_SESSION['success'] = "MRP Run {$result['mrp_ref']} (#{$result['run_id']}) saved to MRP History as FOR APPROVAL — "
+                    . "{$result['queued']} draft requisition(s) awaiting Warehouse Admin, then System Admin. "
+                    . "Stock allocation and Pending PO / RR stay frozen until both approvals pass and the run is released to Procurement.";
+            } else {
+                $_SESSION['success'] = "MRP Run {$result['mrp_ref']} (#{$result['run_id']}) saved to MRP History as FOR APPROVAL — "
+                    . "no lacking items, no purchase requests created. Awaiting Warehouse Admin, then System Admin review; "
+                    . "stock is reserved only after the System Admin approval.";
+            }
+
+            try {
+                NotificationHelper::create('po', 'MRP Run Awaiting WHSE Admin Approval',
+                    "{$result['mrp_ref']} — saved by " . ($_SESSION['full_name'] ?? $_SESSION['username'] ?? 'user')
+                    . ($zeroLacking
+                        ? ' (no lacking items — no purchase requests). Needs Warehouse Admin, then System Admin approval.'
+                        : " with {$result['queued']} draft requisition(s). Needs Warehouse Admin, then System Admin approval before reaching Procurement."),
+                    'warehouse', '?controller=warehouse&action=mrpApproval', $_SESSION['user_id'] ?? null);
+            } catch (\Exception $e) {
+                error_log('mrpApproval notification error: ' . $e->getMessage());
+            }
         } catch (\Exception $e) {
             $_SESSION['error'] = $e->getMessage();
         }
@@ -2331,6 +2429,125 @@ class WarehouseController {
         exit;
     }
 
+    /**
+     * PDF of the FG-based MRP Sheet (the live calculation, not a saved run).
+     * POST: customer_id, fg_item_id, target_qty, bom_id, rows_json (live
+     * ALLOCATED overrides). Recomputes server-side with the same math as
+     * Calculate/Save so the PDF always matches the sheet the user sees.
+     */
+    public function mrpSheetPDF() {
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            header('Location: ?controller=warehouse&action=mrp');
+            exit;
+        }
+
+        $customerId = intval($_POST['customer_id'] ?? 0);
+        $fgItemId = intval($_POST['fg_item_id'] ?? 0);
+        $targetQty = floatval($_POST['target_qty'] ?? 0);
+        $bomId = intval($_POST['bom_id'] ?? 0);
+        $postedRows = json_decode($_POST['rows_json'] ?? '[]', true);
+        $allocOverrides = [];
+        if (is_array($postedRows)) {
+            foreach ($postedRows as $postedRow) {
+                if (!is_array($postedRow)) continue;
+                $id = intval($postedRow['component_item_id'] ?? 0);
+                if ($id > 0 && is_numeric($postedRow['allocated'] ?? null) && floatval($postedRow['allocated']) >= 0) {
+                    $allocOverrides[$id] = floatval($postedRow['allocated']);
+                }
+            }
+        }
+
+        try {
+            if ($fgItemId <= 0 || $targetQty <= 0) {
+                throw new \RuntimeException('Nothing to print — select a finished good and target quantity first.');
+            }
+            $bom = $this->warehouseModel->getBomForFg($fgItemId, $bomId ?: null, $customerId ?: null);
+            if (!$bom) {
+                throw new \RuntimeException('No active BOM found for this finished good.');
+            }
+
+            $components = $this->warehouseModel->getBOMComponentsWithStock([$bom['bom_id']]);
+            $meta = [
+                'fill_volume' => floatval($bom['fill_volume'] ?? 0),
+                'uom' => $bom['uom'] ?? '',
+                'batch_unit_divisor' => floatval($bom['batch_unit_divisor'] ?? 1000) ?: 1000,
+                'is_legacy_formula' => !empty($bom['is_legacy_formula']),
+            ];
+            $componentIds = array_map(function ($c) {
+                return $c['component_item_id'];
+            }, $components);
+            $pendingPoRrMap = $this->warehouseModel->getPendingPoRrForItems($componentIds);
+
+            $rows = [];
+            foreach ($components as $comp) {
+                $required = $this->computeMrpPoolRequiredQty($targetQty, $meta, $comp);
+                $itemId = intval($comp['component_item_id']);
+                $soh = floatval($comp['soh']);
+                $allocated = $allocOverrides[$itemId] ?? floatval($comp['allocated']);
+                $available = max(0, $soh - $allocated);
+                $pendingPoRr = floatval($pendingPoRrMap[$itemId] ?? 0);
+                $lacking = max(0, $required - $available);
+                $rows[] = [
+                    'component_item_id' => $itemId,
+                    'item_code' => $comp['item_code'],
+                    'item_description' => $comp['item_description'],
+                    'item_uom' => $comp['item_uom'],
+                    'display_uom' => $comp['display_uom'] ?? $comp['item_uom'],
+                    'category' => $comp['item_type'] ?? '-',
+                    'required_qty' => $required,
+                    'soh' => $soh,
+                    'allocated' => $allocated,
+                    'pending_po_rr' => $pendingPoRr,
+                    'available' => $available,
+                    'lacking_qty' => $lacking,
+                ];
+            }
+
+            $customerName = '';
+            if ($customerId > 0) {
+                $cStmt = \App\Core\BaseModel::getConnection()->prepare("SELECT customer_name FROM customers WHERE customer_id = :id");
+                $cStmt->execute(['id' => $customerId]);
+                $customerName = (string) $cStmt->fetchColumn();
+            }
+
+            $data = [
+                'fgHeader' => [
+                    'fg_code' => $bom['fg_code'],
+                    'fg_name' => $bom['fg_name'],
+                    'bom_code' => $bom['bom_code'],
+                    'is_default' => !empty($bom['is_default']),
+                    'fill_volume' => $meta['fill_volume'],
+                    'uom' => $meta['uom'],
+                    'batch_unit_divisor' => $meta['batch_unit_divisor'],
+                    'is_legacy_formula' => $meta['is_legacy_formula'],
+                    'target_qty' => $targetQty,
+                ],
+                'components' => $rows,
+                'customerName' => $customerName,
+                'userName' => $_SESSION['full_name'] ?? '',
+                'userDept' => $_SESSION['department'] ?? '',
+            ];
+            extract($data);
+
+            ob_start();
+            include __DIR__ . "/../views/mrp/pdf_template_fg.php";
+            $html = ob_get_clean();
+
+            require_once __DIR__ . '/../../public/vendor/dompdf/autoload.inc.php';
+            $dompdf = new \Dompdf\Dompdf();
+            $dompdf->loadHtml($html);
+            $dompdf->setPaper('A4', 'landscape');
+            $dompdf->render();
+            $fgCode = preg_replace('/[^A-Za-z0-9_\-]/', '', $bom['fg_code'] ?? 'MRP');
+            $dompdf->stream("MRP_{$fgCode}_" . date('Ymd') . ".pdf", ['Attachment' => false]);
+            exit;
+        } catch (\Exception $e) {
+            $_SESSION['error'] = $e->getMessage();
+            header('Location: ?controller=warehouse&action=mrp');
+            exit;
+        }
+    }
+
     // ─── Purchasing PO (renamed from Procurement PO) ────────────────────────────
 
     public function purchasingPo() {
@@ -2340,13 +2557,236 @@ class WarehouseController {
             'search' => $_GET['search'] ?? '',
         ];
         $orders = $this->warehouseModel->getPurchasingPoFiltered($filters);
+        // Full line sets for every MRP source present in the filtered list —
+        // the Source group's View/Process modals show the WHOLE run, even
+        // when a status tab hides some of its lines.
+        $runIds = array_values(array_unique(array_filter(array_map(function ($o) {
+            return (int) ($o['mrp_run_id'] ?? 0);
+        }, $orders))));
         $data['page_title'] = 'Purchasing PO';
         $data['orders'] = $orders;
         $data['filters'] = $filters;
         $data['tabCounts'] = $this->warehouseModel->getPurchasingTabCounts();
         $data['suppliers'] = $this->warehouseModel->getSuppliers();
+        $data['mrpRunLines'] = $this->warehouseModel->getSupplierOrdersByRuns($runIds);
         $data['readOnly'] = (($_SESSION['department'] ?? '') !== 'warehouse');
+        // MRP dual-approval gate, step 1: only flagged warehouse users see/use
+        // the Approve/Reject buttons on pending_whse_approval rows.
+        $data['isWarehouseApprover'] = $this->warehouseModel->isWarehouseApprover($_SESSION['user_id'] ?? null);
         $this->render('purchasingPo/index', $data);
+        }
+
+    // ─── MRP Approval (dedicated gate screen) ─────────────────────────────────
+    // Warehouse Admin viewport: requisition drafts born from the MRP Sheet,
+    // listable by any warehouse user, approvable only by flagged approvers.
+    public function mrpApproval() {
+        // Non-approver warehouse users track progress on MRP History instead —
+        // the approval queue is only meaningful for WHSE Admins.
+        if (($_SESSION['department'] ?? '') !== 'warehouse'
+            || !$this->warehouseModel->isWarehouseApprover($_SESSION['user_id'] ?? null)) {
+            if (($_SESSION['department'] ?? '') === 'warehouse') {
+                $_SESSION['success'] = 'MRP requisitions awaiting approval are tracked on the MRP History screen.';
+            }
+            header('Location: ?controller=warehouse&action=mrpHistory');
+            exit;
+        }
+        $runs = $this->warehouseModel->getMrpApprovalRuns('whse');
+        $decisionRuns = $this->warehouseModel->getMrpWhseDecisionRuns(20);
+        $data['page_title'] = 'MRP Approval';
+        $data['runs'] = $runs;
+        $data['decisionRuns'] = $decisionRuns;
+        $data['isApprover'] = true;
+        $data['gate'] = 'whse';
+        $this->render('mrpApproval/index', $data);
+    }
+
+    // ─── MRP dual-approval gate, step 1: Warehouse Admin approve/reject ───────
+    // Drafts are born as status 'pending_whse_approval'. A warehouse user
+    // flagged is_approver moves them to 'pending_sysadmin_approval' or cancels
+    // them. The System Admin (department='admin') completes step 2 on the
+    // admin module's Purchasing PO screen.
+
+    /** POST-required guard shared by the approve/reject actions. */
+    private function enforceWarehouseApproverAccess(): void {
+        if (($_SESSION['department'] ?? '') !== 'warehouse'
+        || !$this->warehouseModel->isWarehouseApprover($_SESSION['user_id'] ?? null)) {
+            $_SESSION['error'] = 'Only Warehouse Admins can approve or reject PO drafts at the WHSE Admin stage.';
+            $this->redirectToRoleHome('purchasingPo');
+        }
+    }
+
+    private function approvalAuditDescription(array $order, string $verb, string $stageLabel, string $extra = ''): string {
+        return "MRP requisition {$verb} at the {$stageLabel} stage — order #{$order['supplier_order_id']} "
+            . 'item ' . ($order['item_code'] ?? '') . ' qty ' . $order['quantity']
+            . ($order['mrp_ref'] ? ' (' . $order['mrp_ref'] . ')' : '')
+            . ($extra !== '' ? ' — ' . $extra : '');
+    }
+
+    /**
+     * Shared POST handler for both controllers: validates the stage for the
+     * acting role and applies the row-locked approve/reject, then fires the
+     * cross-department notification. Returns without exiting so callers can
+     * flash/redirect as usual; throws on refusal.
+     */
+    private function applyMrpApproval(bool $systemAdminStage, bool $approve, string $reason = ''): void {
+        $id = intval($_POST['supplier_order_id'] ?? 0);
+        if ($id <= 0) throw new \RuntimeException('Invalid requisition.');
+
+        $order = $this->warehouseModel->getSupplierOrderStatus($id);
+        if (!$order) throw new \RuntimeException('Requisition not found.');
+
+        if ($systemAdminStage) {
+            $current = 'pending_sysadmin_approval';
+            // Final gate (two-gate flow): release straight to Procurement —
+            // QC Admin no longer gates requisitions.
+            $next = 'requested';
+            $stageLabel = 'System Admin';
+            $actor = ($_SESSION['department'] ?? '') === 'admin';
+        } else {
+            $current = 'pending_whse_approval';
+            $next = 'pending_sysadmin_approval';
+            $stageLabel = 'Warehouse Admin';
+            $actor = (($_SESSION['department'] ?? '') === 'warehouse')
+                && $this->warehouseModel->isWarehouseApprover($_SESSION['user_id'] ?? null);
+        }
+        if (!$actor) {
+            throw new \RuntimeException('You are not authorized to approve at the ' . $stageLabel . ' stage.');
+        }
+
+        $approverLabel = ($_SESSION['full_name'] ?? $_SESSION['username'] ?? 'unknown') . ' (' . ($_SESSION['department'] ?? '') . ')';
+        if ($approve) {
+            $this->warehouseModel->approveMrpRequisition($id, $current, $next, $stageLabel, $approverLabel);
+            $_SESSION['success'] = $this->approvalAuditDescription($order, 'approved', $stageLabel)
+                . ($systemAdminStage ? ' — released to Procurement.' : ' — now awaiting System Admin approval.');
+            AuditModel::log($_SESSION['user_id'], 'APPROVE', 'warehouse',
+                $this->approvalAuditDescription($order, 'approved', $stageLabel),
+                ['status' => $order['status']], ['status' => $next], 'supplier_order', $id);
+            if ($systemAdminStage) {
+                NotificationHelper::create('po', 'MRP Requisition Released to Procurement',
+                    (string) $order['mrp_ref'] . ' — requisition for ' . $order['item_code'] . ' passed System Admin approval; Procurement can create the PO.',
+                    'warehouse', '?controller=warehouse&action=purchasingPo&tab=requested');
+            } else {
+                NotificationHelper::create('po', 'MRP Requisition Awaiting System Admin',
+                    (string) $order['mrp_ref'] . ' — requisition for ' . $order['item_code'] . ' passed Warehouse Admin approval; System Admin approval required.',
+                    'admin', '?controller=admin&action=approvals');
+            }
+        } else {
+            $this->warehouseModel->rejectMrpRequisition($id, $current, $stageLabel, $reason, $approverLabel);
+            $_SESSION['success'] = $this->approvalAuditDescription($order, 'rejected', $stageLabel, 'Reason: ' . ($reason !== '' ? $reason : 'not provided'));
+            AuditModel::log($_SESSION['user_id'], 'REJECT', 'warehouse',
+                $this->approvalAuditDescription($order, 'rejected', $stageLabel, 'Reason: ' . ($reason !== '' ? $reason : 'not provided')),
+                ['status' => $order['status']], ['status' => 'cancelled'], 'supplier_order', $id);
+            NotificationHelper::create('po', 'MRP Requisition Rejected',
+                (string) $order['mrp_ref'] . ' — requisition for ' . $order['item_code'] . ' was rejected at the ' . $stageLabel . ' stage.'
+                . ($reason !== '' ? ' Reason: ' . $reason : ''),
+                'warehouse', '?controller=warehouse&action=mrpApproval');
+        }
+    }
+
+    public function approveMrpDraft() {
+        try {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                throw new \RuntimeException('POST required.');
+            }
+            $this->enforceWarehouseApproverAccess();
+            $this->applyMrpApproval(false, true);
+        } catch (\Exception $e) {
+            $_SESSION['error'] = $e->getMessage();
+        }
+        header('Location: ?controller=warehouse&action=mrpApproval');
+        exit;
+    }
+
+    public function rejectMrpDraft() {
+        try {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                throw new \RuntimeException('POST required.');
+            }
+            $this->enforceWarehouseApproverAccess();
+            $reason = trim($_POST['reject_reason'] ?? '');
+            $this->applyMrpApproval(false, false, $reason);
+        } catch (\Exception $e) {
+            $_SESSION['error'] = $e->getMessage();
+        }
+        header('Location: ?controller=warehouse&action=mrpApproval');
+        exit;
+    }
+
+    // ─── MRP run-level decision (per-run Approve All / Reject) ────────────────
+    // One decision covers every open draft requisition of the saved run.
+
+    private function decideMrpRunRequest(bool $approve): void {
+        $runId = intval($_POST['mrp_run_id'] ?? 0);
+        if ($runId <= 0) throw new \RuntimeException('Invalid MRP run.');
+        $label = ($_SESSION['full_name'] ?? $_SESSION['username'] ?? 'unknown') . ' (' . ($_SESSION['department'] ?? '') . ')';
+        if ($approve) {
+            $result = $this->warehouseModel->decideMrpRun($runId, 'pending_whse_approval', 'pending_sysadmin_approval', $label);
+            $_SESSION['success'] = 'MRP Run ' . ($result['mrp_ref'] ?: ('#' . $runId)) . ' approved — '
+                . (!empty($result['zero_lacking'])
+                    ? 'no purchase requests (nothing lacking); forwarded to System Admin approval.'
+                    : $result['moved'] . ' requisition(s) forwarded to System Admin approval.');
+            AuditModel::log($_SESSION['user_id'], 'APPROVE', 'warehouse',
+                "MRP run approved at the Warehouse Admin stage — run #{$runId} ({$result['mrp_ref']}), {$result['moved']} requisition(s) forwarded to System Admin",
+                null, ['status' => 'pending_sysadmin_approval'], 'mrp_run', $runId);
+            try {
+                NotificationHelper::create('po', 'MRP Run Awaiting System Admin',
+                    ($result['mrp_ref'] ?: ('MRP run #' . $runId)) . ' — '
+                    . (!empty($result['zero_lacking'])
+                        ? 'passed Warehouse Admin approval (no purchase requests — nothing lacking); System Admin decision required.'
+                        : $result['moved'] . ' requisition(s) passed Warehouse Admin approval; System Admin decision required.'),
+                    'admin', '?controller=admin&action=approvals');
+            } catch (\Exception $e) {
+                error_log('mrpApproval notification error: ' . $e->getMessage());
+            }
+        } else {
+            $reason = trim($_POST['reject_reason'] ?? '');
+            $result = $this->warehouseModel->decideMrpRun($runId, 'pending_whse_approval', 'cancelled', $label, $reason);
+            $_SESSION['success'] = 'MRP Run ' . ($result['mrp_ref'] ?: ('#' . $runId)) . ' rejected — '
+                . (!empty($result['zero_lacking'])
+                    ? 'no purchase requests were involved (nothing lacking). (Reason: ' . ($reason !== '' ? $reason : 'not provided') . ').'
+                    : $result['moved'] . ' requisition(s) cancelled (Reason: ' . ($reason !== '' ? $reason : 'not provided') . ').');
+            AuditModel::log($_SESSION['user_id'], 'REJECT', 'warehouse',
+                "MRP run rejected at the Warehouse Admin stage — run #{$runId} ({$result['mrp_ref']}), {$result['moved']} requisition(s) cancelled — Reason: "
+                . ($reason !== '' ? $reason : 'not provided'),
+                null, ['status' => 'cancelled'], 'mrp_run', $runId);
+            try {
+                NotificationHelper::create('po', 'MRP Run Rejected',
+                    ($result['mrp_ref'] ?: ('MRP run #' . $runId)) . ' — requisitions were '
+                    . $result['moved'] . ' removed; nothing was pushed to Procurement. Reason: '
+                    . ($reason !== '' ? $reason : 'not provided'),
+                    'warehouse', '?controller=warehouse&action=mrpApproval');
+            } catch (\Exception $e) {
+                error_log('mrpApproval notification error: ' . $e->getMessage());
+            }
+        }
+    }
+
+    public function approveMrpRunDraft() {
+        try {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                throw new \RuntimeException('POST required.');
+            }
+            $this->enforceWarehouseApproverAccess();
+            $this->decideMrpRunRequest(true);
+        } catch (\Exception $e) {
+            $_SESSION['error'] = $e->getMessage();
+        }
+        header('Location: ?controller=warehouse&action=mrpApproval');
+        exit;
+    }
+
+    public function rejectMrpRunDraft() {
+        try {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                throw new \RuntimeException('POST required.');
+            }
+            $this->enforceWarehouseApproverAccess();
+            $this->decideMrpRunRequest(false);
+        } catch (\Exception $e) {
+            $_SESSION['error'] = $e->getMessage();
+        }
+        header('Location: ?controller=warehouse&action=mrpApproval');
+        exit;
     }
 
     // JSON hook for the supplier dropdown — reads WarehouseModel::getSuppliers(),
@@ -2362,6 +2802,22 @@ class WarehouseController {
         exit;
     }
 
+    // JSON item search (code + description) for the Purchasing PO cart lines.
+    // Non-empty q: LIKE search (code or description), 20 hits. Empty q: browse
+    // mode — first 50 codes so the dropdown can list items on field focus.
+    public function searchItems() {
+        header('Content-Type: application/json');
+        try {
+            $query = trim($_GET['q'] ?? '');
+            echo json_encode($this->catalogModel->searchItems($query));
+        } catch (\Exception $e) {
+            error_log('warehouse searchItems error: ' . $e->getMessage());
+            http_response_code(500);
+            echo json_encode(['error' => 'Failed to search items']);
+        }
+        exit;
+    }
+
     public function createPurchasingPo() {
         $this->enforceReadOnlyPurchasingPo();
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -2369,36 +2825,145 @@ class WarehouseController {
             exit;
         }
         try {
-            $supplierName = trim($_POST['supplier_name'] ?? '');
-            $itemId = intval($_POST['item_id'] ?? 0);
-            $quantity = floatval($_POST['quantity'] ?? 0);
-            $unitCost = floatval($_POST['unit_cost'] ?? 0);
-            $orderDate = $_POST['order_date'] ?: null;
-            $expectedDate = $_POST['expected_date'] ?: null;
-            $remarks = trim($_POST['remarks'] ?? '') ?: null;
-            $poRef = trim($_POST['po_ref'] ?? '') ?: null;
-
-            if (empty($supplierName) || $itemId <= 0 || $quantity <= 0) {
-                throw new \RuntimeException('Supplier name, item, and quantity are required.');
+            // Cart save: lines arrive as a JSON array (supplier + item per
+            // line, so one PO may span several suppliers). Falls back to the
+            // legacy single-item POST shape for safety.
+            $lines = json_decode($_POST['lines'] ?? '[]', true);
+            if (!is_array($lines) || !count($lines)) {
+                $single = [
+                    'supplier_name' => trim($_POST['supplier_name'] ?? ''),
+                    'item_id' => intval($_POST['item_id'] ?? 0),
+                    'quantity' => floatval($_POST['quantity'] ?? 0),
+                    'unit_cost' => floatval($_POST['unit_cost'] ?? 0),
+                ];
+                $lines = ($single['item_id'] > 0) ? [$single] : [];
             }
 
-            $this->warehouseModel->createPurchasingPo([
-                'supplier_name' => $supplierName,
-                'item_id' => $itemId,
-                'quantity' => $quantity,
-                'unit_cost' => $unitCost,
-                'order_date' => $orderDate,
-                'expected_date' => $expectedDate,
-                'remarks' => $remarks,
-                'po_ref' => $poRef,
-                'created_by' => $_SESSION['user_id']
-            ]);
+            $clean = [];
+            foreach ($lines as $i => $line) {
+                $supplier = trim($line['supplier_name'] ?? '');
+                $itemId = intval($line['item_id'] ?? 0);
+                $quantity = floatval($line['quantity'] ?? 0);
+                $unitCost = floatval($line['unit_cost'] ?? 0);
+                if ($supplier === '' || $itemId <= 0 || $quantity <= 0) {
+                    throw new \RuntimeException('Line ' . ($i + 1) . ': supplier, item, and quantity are required.');
+                }
+                $clean[] = [
+                    'supplier_name' => $supplier,
+                    'item_id' => $itemId,
+                    'quantity' => $quantity,
+                    'unit_cost' => $unitCost,
+                ];
+            }
+            if (!count($clean)) {
+                throw new \RuntimeException('Add at least one line (supplier, item, quantity) to the PO.');
+            }
 
-            $_SESSION['success'] = 'Purchasing PO created successfully.';
+            $result = $this->warehouseModel->createManualPoGroup([
+                'order_date' => $_POST['order_date'] ?: null,
+                'expected_date' => $_POST['expected_date'] ?: null,
+                'remarks' => trim($_POST['remarks'] ?? '') ?: null,
+                'po_ref' => trim($_POST['po_ref'] ?? '') ?: null,
+                'created_by' => $_SESSION['user_id'],
+            ], $clean);
+
+            $n = (int) $result['line_count'];
+            $audit = 'Purchasing PO created - group #' . $result['po_group_id'] . ' - ' . $n
+                . ' line(s) awaiting WHSE Admin approval.';
+            $_SESSION['success'] = $audit;
+            AuditModel::log($_SESSION['user_id'], 'CREATE', 'warehouse', $audit,
+                null, ['status' => 'pending_whse_approval', 'po_group_id' => $result['po_group_id']],
+                'supplier_orders', null);
         } catch (\Exception $e) {
             $_SESSION['error'] = $e->getMessage();
         }
         header('Location: ?controller=warehouse&action=purchasingPo');
+        exit;
+    }
+
+    /**
+     * WHSE Admin gate for manual (non-MRP) PO groups: forwards every line of
+     * the group to System Admin approval (pending_admin_approval).
+     */
+    public function approveManualPo() {
+        try {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                throw new \RuntimeException('POST required.');
+            }
+            $this->enforceWarehouseApproverAccess();
+            $id = intval($_POST['supplier_order_id'] ?? 0);
+            if ($id <= 0) throw new \RuntimeException('Invalid PO.');
+            $label = ($_SESSION['full_name'] ?? $_SESSION['username'] ?? 'unknown') . ' (' . ($_SESSION['department'] ?? '') . ')';
+            $result = $this->warehouseModel->approveManualPoGroup($id, $label);
+            $audit = 'Purchasing PO group #' . $result['po_group_id']
+                . ' approved at the WHSE Admin stage - ' . $result['moved']
+                . ' line(s) now awaiting System Admin approval.';
+            $_SESSION['success'] = $audit;
+            AuditModel::log($_SESSION['user_id'], 'APPROVE', 'warehouse', $audit,
+                ['status' => 'pending_whse_approval'], ['status' => 'pending_admin_approval'],
+                'po_group', $result['po_group_id']);
+            NotificationHelper::create('po', 'Purchasing PO Awaiting System Admin',
+                'Group #' . $result['po_group_id'] . ' - ' . $result['moved']
+                . ' PO line(s) passed WHSE Admin approval; System Admin approval required.',
+                'admin', '?controller=admin&action=approvals', $_SESSION['user_id'] ?? null);
+        } catch (\Exception $e) {
+            $_SESSION['error'] = $e->getMessage();
+        }
+        header('Location: ?controller=warehouse&action=purchasingPo');
+        exit;
+    }
+
+    /**
+     * WHSE Admin reject for manual (non-MRP) PO groups: cancels every line
+     * of the group with the rejection reason.
+     */
+    public function rejectManualPo() {
+        try {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                throw new \RuntimeException('POST required.');
+            }
+            $this->enforceWarehouseApproverAccess();
+            $id = intval($_POST['supplier_order_id'] ?? 0);
+            if ($id <= 0) throw new \RuntimeException('Invalid PO.');
+            $reason = trim($_POST['reject_reason'] ?? '');
+            if ($reason === '') {
+                throw new \RuntimeException('A rejection reason is required.');
+            }
+            $label = ($_SESSION['full_name'] ?? $_SESSION['username'] ?? 'unknown') . ' (' . ($_SESSION['department'] ?? '') . ')';
+            $result = $this->warehouseModel->rejectManualPoGroup($id, $reason, $label);
+            $audit = 'Purchasing PO group #' . $result['po_group_id']
+                . ' rejected at the WHSE Admin stage - ' . $result['cancelled']
+                . ' line(s) cancelled. Reason: ' . $reason;
+            $_SESSION['success'] = $audit;
+            AuditModel::log($_SESSION['user_id'], 'REJECT', 'warehouse', $audit,
+                ['status' => 'pending_whse_approval'], ['status' => 'cancelled'],
+                'po_group', $result['po_group_id']);
+        } catch (\Exception $e) {
+            $_SESSION['error'] = $e->getMessage();
+        }
+        header('Location: ?controller=warehouse&action=purchasingPo');
+        exit;
+    }
+
+    /**
+     * Printable Purchasing PO (standalone page + browser Print). Works for
+     * grouped lines (whole group) and single rows (MRP / legacy / received).
+     */
+    public function printPurchasingPo() {
+        $id = intval($_GET['id'] ?? 0);
+        if ($id <= 0) {
+            header('Location: ?controller=warehouse&action=purchasingPo');
+            exit;
+        }
+        $lines = $this->warehouseModel->getPoGroupForPrint($id);
+        if (!$lines) {
+            $_SESSION['error'] = 'Purchasing PO not found.';
+            header('Location: ?controller=warehouse&action=purchasingPo');
+            exit;
+        }
+        $first = $lines[0];
+        $pageTitle = 'Purchasing Order' . ($first['po_ref'] ? ' — ' . $first['po_ref'] : ' — Group #' . ($first['po_group_id'] ?: $first['supplier_order_id']));
+        include __DIR__ . "/../views/purchasingPo/print.php";
         exit;
     }
 
@@ -2429,11 +2994,82 @@ class WarehouseController {
                 'po_id' => !empty($_POST['po_id']) ? intval($_POST['po_id']) : null,
             ]);
 
-            $_SESSION['success'] = 'Purchasing PO processed successfully.';
+            $_SESSION['success'] = 'Purchasing PO processed — saved as a PO draft awaiting WHSE Admin approval, then System Admin approval. It becomes Active for receiving after both.';
+            try {
+                NotificationHelper::create('po', 'PO Draft Awaiting WHSE Admin Approval',
+                    'Procurement saved PO draft ' . (trim($_POST['po_ref'] ?? '') ?: ('#' . $id))
+                    . ' (' . $supplierName . ' — ' . formatQty($quantity) . ') which needs WHSE Admin approval first, then System Admin, before Receiving.',
+                    'warehouse', '?controller=warehouse&action=purchasingPo&tab=approval', $_SESSION['user_id'] ?? null);
+            } catch (\Exception $e) {
+                error_log('poDraft notification error: ' . $e->getMessage());
+            }
         } catch (\Exception $e) {
             $_SESSION['error'] = $e->getMessage();
         }
         header('Location: ?controller=warehouse&action=purchasingPo');
+        exit;
+    }
+
+    /**
+     * Group Process for an MRP source: one modal submit moves EVERY requested
+     * line of the run to pending_admin_approval (System Admin), each line with
+     * its own supplier/qty/cost and the shared header (dates + one PO REF).
+     */
+    public function processMrpGroupPo() {
+        $this->enforceReadOnlyPurchasingPo();
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            header('Location: ?controller=warehouse&action=purchasingPo');
+            exit;
+        }
+        try {
+            $runId = intval($_POST['mrp_run_id'] ?? 0);
+            if ($runId <= 0) throw new \RuntimeException('Invalid MRP run.');
+
+            $lines = json_decode($_POST['lines'] ?? '[]', true);
+            if (!is_array($lines) || !count($lines)) {
+                throw new \RuntimeException('Add at least one line (supplier, quantity) to process.');
+            }
+            $clean = [];
+            foreach ($lines as $i => $line) {
+                $id = intval($line['supplier_order_id'] ?? 0);
+                $supplier = trim($line['supplier_name'] ?? '');
+                $quantity = floatval($line['quantity'] ?? 0);
+                if ($id <= 0 || $supplier === '' || $quantity <= 0) {
+                    throw new \RuntimeException('Line ' . ($i + 1) . ': supplier and quantity are required.');
+                }
+                $clean[] = [
+                    'supplier_order_id' => $id,
+                    'supplier_name' => $supplier,
+                    'quantity' => $quantity,
+                    'unit_cost' => floatval($line['unit_cost'] ?? 0),
+                ];
+            }
+
+            $moved = $this->warehouseModel->processMrpPoGroup($runId, [
+                'order_date' => $_POST['order_date'] ?: null,
+                'expected_date' => $_POST['expected_date'] ?: null,
+                'po_ref' => trim($_POST['po_ref'] ?? '') ?: null,
+            ], $clean);
+
+            $audit = 'MRP source processed as a group - run #' . $runId . ' - ' . $moved
+                . ' line(s) saved as pending_whse_approval drafts (WHSE Admin gate first).';
+            $_SESSION['success'] = $moved . ' line(s) processed for MRP run #' . $runId
+                . ' — saved as PO drafts awaiting WHSE Admin approval, then System Admin.';
+            AuditModel::log($_SESSION['user_id'], 'PROCESS', 'warehouse', $audit,
+                ['status' => 'requested'], ['status' => 'pending_whse_approval', 'mrp_run_id' => $runId],
+                'mrp_run', $runId);
+            try {
+                NotificationHelper::create('po', 'MRP PO Drafts Awaiting WHSE Admin',
+                    'MRP run #' . $runId . ' — ' . $moved
+                    . ' PO draft line(s) saved by Procurement; WHSE Admin approval required first, then System Admin, before Receiving.',
+                    'warehouse', '?controller=warehouse&action=purchasingPo&tab=approval', $_SESSION['user_id'] ?? null);
+            } catch (\Exception $e) {
+                error_log('mrpGroup notification error: ' . $e->getMessage());
+            }
+        } catch (\Exception $e) {
+            $_SESSION['error'] = $e->getMessage();
+        }
+        header('Location: ?controller=warehouse&action=purchasingPo&tab=approval');
         exit;
     }
 
@@ -2461,9 +3097,17 @@ class WarehouseController {
                 'expected_date' => $_POST['expected_date'] ?: null,
             ]);
 
-            $_SESSION['success'] = count($orderIds) . ' requisition(s) consolidated into PO #'
-                . $result['consolidated_id'] . ' (total qty '
-                . formatQty((float) $result['total_qty']) . ').';
+          $_SESSION['success'] = count($orderIds) . ' requisition(s) consolidated into PO #'
+            . $result['consolidated_id'] . ' (total qty '
+            . formatQty((float) $result['total_qty']) . ') - PENDING WHSE ADMIN APPROVAL first, then System Admin, before it becomes Active for receiving.';
+          try {
+            NotificationHelper::create('po', 'PO Draft Awaiting WHSE Admin Approval',
+              'Consolidated PO draft #' . $result['consolidated_id'] . ' (' . $supplierName . ' - '
+              . formatQty((float) $result['total_qty']) . ') needs WHSE Admin approval first, then System Admin, before Receiving.',
+              'warehouse', '?controller=warehouse&action=purchasingPo&tab=approval', $_SESSION['user_id'] ?? null);
+          } catch (\Exception $e) {
+            error_log('poDraft notification error: ' . $e->getMessage());
+          }
         } catch (\Exception $e) {
             $_SESSION['error'] = $e->getMessage();
         }
@@ -2658,9 +3302,14 @@ class WarehouseController {
 
         // Receiving is allowed whenever a balance remains on the line — including
         // orders sitting in 'For Inspection' or 'partially_received' (multi-batch
-        // partial receiving). Only deliberately-locked statuses and a fully
-        // ordered balance block the receipt.
+        // partial receiving), and lines whose overage was approved by the System
+        // Admin (excess beyond the ordered total may still come in). Only
+        // deliberately-locked statuses and a fully exhausted receiving cap.
         $remainingBefore = floatval($order['quantity'] ?? 0) - floatval($order['received_qty'] ?? 0);
+        $overageApproved = (string) ($order['overage_request_status'] ?? '') === 'approved';
+        $overageLeft = $overageApproved
+            ? floatval($order['overage_approved_qty'] ?? 0) - max(0, -1 * $remainingBefore)
+            : 0.0;
 
         if (in_array($orderStatus, ['cancelled', 'rejected'])) {
             $_SESSION['error'] = 'Cannot receive a purchasing PO with status "' . ucfirst($order['status'] ?? 'Unknown') . '".';
@@ -2668,7 +3317,7 @@ class WarehouseController {
             exit;
         }
 
-        if ($remainingBefore <= 0.0001 || $orderStatus === 'received') {
+        if (($remainingBefore <= 0.0001 && $overageLeft <= 0.0001) || $orderStatus === 'received') {
             $_SESSION['error'] = 'This purchasing PO has already been fully received.';
             header('Location: ?controller=warehouse&action=receivingPo');
             exit;
@@ -2706,6 +3355,35 @@ class WarehouseController {
                 $itemType = strtoupper(trim((string) ($order['item_type'] ?? '')));
                 if (in_array($itemType, ['RM', 'FG', 'SFG'], true) && $lotNumber === null) {
                     throw new \RuntimeException('Lot / Batch Number is required for ' . $itemType . ' receipts.');
+                }
+
+                // Overage guardrail: exact / partial shipments pass straight
+                // through to QC. Anything beyond the ordered total — unless the
+                // excess is already covered by an approved overage — is blocked;
+                // the attempt is logged as a pending System Admin overage
+                // request and NOTHING is staged to QC until it is approved.
+                $orderedQty = floatval($order['quantity'] ?? 0);
+                $currentReceived = floatval($order['received_qty'] ?? 0);
+                $hasApprovedOver = (string) ($order['overage_request_status'] ?? '') === 'approved';
+                $approvedOver = $hasApprovedOver ? floatval($order['overage_approved_qty'] ?? 0) : 0.0;
+                if ($currentReceived + $receivedQty > $orderedQty + $approvedOver + 0.0001) {
+                    $overQty = round(($currentReceived + $receivedQty) - $orderedQty, 4);
+                    $this->warehouseModel->requestOverageApproval($id, $overQty);
+                    AuditModel::log($_SESSION['user_id'], 'CREATE', 'warehouse',
+                        'Over-receipt submitted on order #' . $id . ' item ' . ($order['item_code'] ?? '')
+                        . ' — exceeding ordered ' . formatQty($orderedQty) . ' by ' . formatQty($overQty)
+                        . ' (' . ($order['overage_request_status'] === 'pending' ? 'request refreshed, still pending' : 'request now pending') . ' System Admin approval)',
+                        null, ['overage_request_qty' => $overQty], 'supplier_order', $id);
+                    NotificationHelper::create('po', 'Over-Receipt Approval Needed',
+                        ($order['po_ref'] ?: ('SO #' . $id)) . ' — shipment of ' . formatQty($receivedQty)
+                        . ' ' . ($order['item_code'] ?? '') . ' exceeds the ordered ' . formatQty($orderedQty)
+                        . ' by ' . formatQty($overQty) . '. System Admin approval required before it can reach QC.',
+                        'admin', '?controller=admin&action=receivingPo&tab=overage');
+                    $_SESSION['error'] = 'Over-receipt of ' . formatQty($overQty)
+                        . ' beyond the ordered ' . formatQty($orderedQty) . ' requires System Admin approval. '
+                        . 'The approval request has been submitted — this receipt was NOT staged for QC. Retry once approved (In-Transit badge shows the approval state).';
+                    header('Location: ?controller=warehouse&action=receivingPo');
+                    exit;
                 }
 
                 $result = $this->warehouseModel->receivePurchasingPo($id, [
@@ -2948,9 +3626,36 @@ class WarehouseController {
         $dompdf->loadHtml($html);
         $dompdf->setPaper('A4', 'landscape');
         $dompdf->render();
-        $poNumber = $data['po']['po_number'] ?? 'snapshot';
+        // PO-based runs print with the PO number; FG-based runs (no po_id)
+        // fall back to the MRP reference / FG code.
+        $poNumber = $data['po']['customer_po_number'] ?? ('MRP-' . $runId);
+        $poNumber = preg_replace('/[^A-Za-z0-9_\-]/', '', $poNumber) ?: ('MRP-' . $runId);
         $snapDate = date('Ymd', strtotime($data['snapshotDate']));
         $dompdf->stream("MRP_{$poNumber}_{$snapDate}.pdf", ['Attachment' => false]);
+        exit;
+    }
+
+    /**
+     * Printable snapshot view (History printer icon): standalone page with an
+     * editable Remarks column — user edits remarks, then browser-prints.
+     * Remarks are print-only; the frozen snapshot is never modified.
+     */
+    public function mrpSnapshotPrint() {
+        $runId = intval($_GET['run_id'] ?? 0);
+        if ($runId <= 0) {
+            header('Location: ?controller=warehouse&action=mrpHistory');
+            exit;
+        }
+
+        $snapshotData = $this->warehouseModel->getMrpRunSnapshotData($runId);
+        if (!$snapshotData) {
+            $_SESSION['error'] = 'MRP snapshot not found.';
+            header('Location: ?controller=warehouse&action=mrpHistory');
+            exit;
+        }
+
+        extract($snapshotData);
+        include __DIR__ . "/../views/mrp/snapshot_print.php";
         exit;
     }
 
@@ -3054,7 +3759,7 @@ class WarehouseController {
         $data['total'] = $total;
         $data['search'] = $search;
         $data['typeFilter'] = $typeFilter;
-        $data['canEdit'] = (($_SESSION['department'] ?? '') === 'warehouse');
+        $data['canEdit'] = (($_SESSION['department'] ?? '') === 'admin');
         $data['page_title'] = 'Item Master List';
         $this->render('items/index', $data);
     }
@@ -3064,8 +3769,8 @@ class WarehouseController {
             header('Location: ?controller=warehouse&action=items');
             exit;
         }
-        if (($_SESSION['department'] ?? '') !== 'warehouse') {
-            $_SESSION['error'] = 'Only warehouse users can create master items.';
+        if (($_SESSION['department'] ?? '') !== 'admin') {
+            $_SESSION['error'] = 'Only System Admins can create master items.';
             header('Location: ?controller=warehouse&action=items');
             exit;
         }
@@ -3161,8 +3866,8 @@ class WarehouseController {
             header('Location: ' . $back);
             exit;
         }
-        if (($_SESSION['department'] ?? '') !== 'warehouse') {
-            $_SESSION['error'] = 'Only warehouse users can adjust SOH.';
+        if (($_SESSION['department'] ?? '') !== 'admin') {
+            $_SESSION['error'] = 'Only System Admins can adjust SOH.';
             header('Location: ' . $back);
             exit;
         }
@@ -3371,11 +4076,146 @@ class WarehouseController {
         }
     }
 
+    // ─── Stock In/Out (stock_movements ledger, receiving personnel) ────────────
+
+    public function stockMovement() {
+        $data['page_title'] = 'Stock In / Stock Out';
+        $data['movements'] = $this->warehouseModel->getStockMovements(100);
+        $data['poOptions'] = $this->warehouseModel->getStockInPoOptions();
+        $data['stockOutItems'] = $this->catalogModel->getItems();
+        $this->render('stock_movement/index', $data);
+    }
+
+    public function saveStockMovement() {
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            header('Location: ?controller=warehouse&action=stockMovement');
+            exit;
+        }
+
+        $back = '?controller=warehouse&action=stockMovement';
+        $type = strtoupper(trim($_POST['movement_type'] ?? ''));
+        $itemId = (int) ($_POST['item_id'] ?? 0);
+        $site = trim($_POST['site_code'] ?? '001');
+        $rawQty = trim($_POST['qty'] ?? '');
+        $remarks = trim($_POST['remarks'] ?? '');
+
+        try {
+            if (!in_array($type, ['IN', 'OUT'], true)) {
+                throw new \RuntimeException('Movement type must be IN or OUT.');
+            }
+            $item = $this->itemImportModel->getItemById($itemId);
+            if (!$item) {
+                throw new \RuntimeException('Item not found.');
+            }
+            if (!preg_match('/^[A-Za-z0-9_\-]{1,20}$/', $site)) {
+                throw new \RuntimeException('Invalid site code.');
+            }
+            if ($rawQty === '' || !is_numeric($rawQty) || (float) $rawQty <= 0) {
+                throw new \RuntimeException('Quantity must be a number greater than zero.');
+            }
+            $qty = round((float) $rawQty, 4);
+
+            // Stock IN references a purchasing PO; Stock OUT uses a free-text reason.
+            $referenceType = null;
+            $referenceNo = null;
+            if ($type === 'IN') {
+                $poId = (int) ($_POST['supplier_order_id'] ?? 0);
+                $poOption = null;
+                foreach ($this->warehouseModel->getStockInPoOptions() as $opt) {
+                    if ((int) $opt['supplier_order_id'] === $poId) {
+                        $poOption = $opt;
+                        break;
+                    }
+                }
+                if (!$poOption) {
+                    throw new \RuntimeException('Please select a purchasing PO reference for the stock IN.');
+                }
+                if ((int) $poOption['item_id'] !== $itemId) {
+                    throw new \RuntimeException('The selected item does not match the chosen purchasing PO.');
+                }
+                $referenceType = 'PURCHASING_PO';
+                $referenceNo = trim($poOption['po_ref'] ?: ('PO#' . $poOption['supplier_order_id']));
+            } else {
+                $referenceType = 'MANUAL';
+                $referenceNo = null;
+                if ($remarks === '') {
+                    throw new \RuntimeException('A reason/remarks is required for stock OUT.');
+                }
+                $soh = $this->itemImportModel->getSoh($itemId, $site);
+                if ($qty > $soh + 0.0001) {
+                    throw new \RuntimeException('Stock OUT exceeds available SOH (' . formatQty($soh) . ' ' . $item['item_uom'] . ' @ ' . $site . ').');
+                }
+            }
+
+            $conn = \App\Core\BaseModel::getConnection();
+            $conn->beginTransaction();
+            try {
+                $this->warehouseModel->recordStockMovement([
+                    'movement_type' => $type,
+                    'item_id' => $itemId,
+                    'site_code' => $site,
+                    'qty' => $qty,
+                    'reference_type' => $referenceType,
+                    'reference_no' => $referenceNo,
+                    'remarks' => $remarks !== '' ? $remarks : null,
+                    'created_by' => $_SESSION['user_id'] ?? null,
+                ]);
+                $delta = $type === 'IN' ? $qty : -$qty;
+                $this->itemImportModel->adjustSohDelta($itemId, $site, $delta);
+                $conn->commit();
+            } catch (\Exception $e) {
+                $conn->rollBack();
+                throw $e;
+            }
+
+            AuditModel::log(
+                $_SESSION['user_id'],
+                'UPDATE',
+                'warehouse',
+                "Stock {$type}: {$item['item_code']} " . formatQty($qty) . ' @ ' . $site
+                    . ($referenceNo !== null ? " (ref {$referenceType} {$referenceNo})" : '')
+                    . ($remarks !== '' ? " — {$remarks}" : ''),
+                null,
+                ['movement_type' => $type, 'qty' => $qty, 'site_code' => $site, 'reference_no' => $referenceNo],
+                'item',
+                $itemId
+            );
+
+            $_SESSION['success'] = "Stock {$type} recorded: {$item['item_code']} " . formatQty($qty) . ' @ ' . $site . '.';
+        } catch (\Exception $e) {
+            $_SESSION['error'] = $e->getMessage();
+        }
+        header('Location: ' . $back);
+        exit;
+    }
+
     private function render($view, $data = []) {
+        // Sidebar badge + approver visibility: only Warehouse Admins see the
+        // MRP Approval nav item; count = runs awaiting WHSE approval.
+        if (($_SESSION['department'] ?? '') === 'warehouse') {
+            $role = RoleHelper::currentRole();
+            $data['role'] = $role;
+            $data['roleLabel'] = RoleHelper::label($role);
+            $data['sideMenu'] = RoleHelper::warehouseMenu($role);
+            try {
+                $data['mrpApprovalCount'] = $this->warehouseModel->getMrpApprovalCount('whse');
+                $data['isMrpApprover'] = $this->warehouseModel->isWarehouseApprover($_SESSION['user_id'] ?? null);
+            } catch (\Exception $e) {
+                $data['mrpApprovalCount'] = 0;
+                $data['isMrpApprover'] = false;
+            }
+        }
         extract($data);
         ob_start();
         include __DIR__ . "/../views/{$view}.php";
         $content = ob_get_clean();
+        // System Admin edits the Item Master List from the admin module — keep
+        // them in the admin chrome instead of swapping to the warehouse sidebar.
+        $adminItemViews = ['items/index', 'items/import_form', 'items/import_preview'];
+        if (($_SESSION['department'] ?? '') === 'admin' && in_array($view, $adminItemViews, true)) {
+            include BASE_PATH . 'admin/views/layouts/main.php';
+            return;
+        }
         include __DIR__ . "/../views/layouts/main.php";
     }
 }

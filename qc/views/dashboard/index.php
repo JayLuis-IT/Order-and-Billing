@@ -493,19 +493,19 @@ document.addEventListener('DOMContentLoaded', function() {
             const decision = document.getElementById('qcDecision').value;
 
             if (!decision) {
-                alert('Please choose a QC decision.');
+                Dlg.alert('Please choose a QC decision.');
                 return;
             }
             if (Math.abs((passedQty + rejectedQty) - receivedQty) > 0.0001) {
-                alert('Passed Qty + Rejected Qty must equal Received Qty.');
+                Dlg.alert('Passed Qty + Rejected Qty must equal Received Qty.');
                 return;
             }
             if (decision === 'PASSED' && passedQty <= 0) {
-                alert('Passed quantity must be greater than zero.');
+                Dlg.alert('Passed quantity must be greater than zero.');
                 return;
             }
             if (decision === 'REJECTED' && rejectedQty <= 0) {
-                alert('Rejected quantity must be greater than zero.');
+                Dlg.alert('Rejected quantity must be greater than zero.');
                 return;
             }
 
@@ -525,13 +525,14 @@ document.addEventListener('DOMContentLoaded', function() {
                     return data;
                 });
             }).then(function() {
-                alert('QC decision submitted successfully.');
+                Dlg.alert('QC decision submitted successfully.');
                 window.location.reload();
             }).catch(function(error) {
                 if (submitBtn) submitBtn.disabled = false;
-                alert(error.message || 'Unable to submit QC decision.');
+                Dlg.alert(error.message || 'Unable to submit QC decision.');
             });
         });
     }
 });
 </script>
+<?php require BASE_PATH . 'app/views/shared/table_enhancer.php'; ?>

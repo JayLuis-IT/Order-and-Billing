@@ -399,7 +399,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 })
                 .catch(function(error) {
                     console.error('Error:', error);
-                    alert('Failed to load PO details: ' + error.message);
+                    Dlg.alert('Failed to load PO details: ' + error.message);
                 });
         });
     });

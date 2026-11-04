@@ -44,7 +44,7 @@
                     <td><?= date('Y-m-d', strtotime($b['created_at'])) ?></td>
                     <td>
                         <a href="?controller=rnd&action=bomEdit&id=<?= $b['id'] ?>" class="btn btn-sm btn-primary"><i class="bi bi-pencil"></i></a>
-                        <a href="?controller=rnd&action=bomDelete&id=<?= $b['id'] ?>" class="btn btn-sm btn-danger" onclick="return confirm('Delete this BOM and all its line items?')"><i class="bi bi-trash"></i></a>
+                        <a href="?controller=rnd&action=bomDelete&id=<?= $b['id'] ?>" class="btn btn-sm btn-danger" data-confirm="Delete this BOM and all its line items?"><i class="bi bi-trash"></i></a>
                     </td>
                 </tr>
                 <?php endforeach; ?>

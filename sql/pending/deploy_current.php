@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 require_once __DIR__ . '/../../core/BaseModel.php';
 
 use App\Core\BaseModel;
@@ -155,7 +155,7 @@ if ($department !== false && (strpos($department, "'rnd'") === false)) {
     echo "Updated: users.department enum\n";
 }
 
-// ─── Phase 1: MRP Tables ─────────────────────────────────────────────────────
+// â”€â”€â”€ Phase 1: MRP Tables â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 if (!tableExists($pdo, 'raw_materials')) {
     $pdo->exec("CREATE TABLE `raw_materials` (
@@ -208,7 +208,7 @@ if (!tableExists($pdo, 'fg_bom_items')) {
     echo "Already exists: fg_bom_items\n";
 }
 
-// ─── End Phase 1 ─────────────────────────────────────────────────────────────
+// â”€â”€â”€ End Phase 1 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 echo "Backfilling item references...\n";
 $pdo->exec('UPDATE production_lots pl
@@ -224,7 +224,7 @@ $record = $pdo->prepare('INSERT INTO schema_migrations (migration_key) VALUES (?
     ON DUPLICATE KEY UPDATE applied_at = CURRENT_TIMESTAMP');
 $record->execute(['current-production-schema-v2-mrp-phase1']);
 
-// ─── Phase 2: ERIC Item Master & Inventory Balances ──────────────────────────
+// â”€â”€â”€ Phase 2: ERIC Item Master & Inventory Balances â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 echo "Phase 2: ERIC Item Master & Inventory Balances...\n";
 
@@ -288,7 +288,7 @@ $pdo->exec("INSERT INTO items (item_code, item_description, item_type, raw_c_typ
     FROM raw_materials rm
     WHERE rm.is_active = 1
       AND NOT EXISTS (SELECT 1 FROM items i WHERE i.item_code = rm.item_code)");
-echo "Migrated: raw_materials → items (master records)\n";
+echo "Migrated: raw_materials â†’ items (master records)\n";
 
 // Migrate raw_materials stock into inventory_balances
 $pdo->exec("INSERT INTO inventory_balances (item_id, site_code, qty_on_hand, qty_allocated)
@@ -297,19 +297,19 @@ $pdo->exec("INSERT INTO inventory_balances (item_id, site_code, qty_on_hand, qty
     JOIN items i ON i.item_code = rm.item_code
     WHERE rm.is_active = 1
       AND (rm.stock_on_hand > 0 OR rm.allocated_stock > 0)");
-echo "Migrated: raw_materials stock → inventory_balances\n";
+echo "Migrated: raw_materials stock â†’ inventory_balances\n";
 
 $record2 = $pdo->prepare('INSERT INTO schema_migrations (migration_key) VALUES (?)
     ON DUPLICATE KEY UPDATE applied_at = CURRENT_TIMESTAMP');
 $record2->execute(['eric-item-master-inventory-v1']);
 
-// ─── End Phase 2 ─────────────────────────────────────────────────────────────
+// â”€â”€â”€ End Phase 2 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// ─── Phase 3: Migrate BOM items from raw_materials → items ──────────────────
+// â”€â”€â”€ Phase 3: Migrate BOM items from raw_materials â†’ items â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 echo "\n--- Phase 3: BOM items FK migration ---\n";
 
-// Step 1: Migrate data — update raw_material_id values to corresponding items.item_id
+// Step 1: Migrate data â€” update raw_material_id values to corresponding items.item_id
 if (columnExists($pdo, 'fg_bom_items', 'raw_material_id')) {
     $countBefore = $pdo->query("SELECT COUNT(*) FROM fg_bom_items")->fetchColumn();
     echo "fg_bom_items rows before migration: {$countBefore}\n";
@@ -322,7 +322,7 @@ if (columnExists($pdo, 'fg_bom_items', 'raw_material_id')) {
     $migrated = $pdo->exec("UPDATE fg_bom_items bi
         JOIN items i ON bi.raw_material_id = i.item_id
         SET bi.raw_material_id = bi.raw_material_id");
-    echo "Migrated: fg_bom_items.raw_material_id values → items.item_id values\n";
+    echo "Migrated: fg_bom_items.raw_material_id values â†’ items.item_id values\n";
 
     // Step 2: Drop existing foreign key
     $fks = $pdo->query("SELECT CONSTRAINT_NAME
@@ -338,32 +338,32 @@ if (columnExists($pdo, 'fg_bom_items', 'raw_material_id')) {
 
     // Step 3: Rename column
     $pdo->exec("ALTER TABLE fg_bom_items CHANGE `raw_material_id` `item_id` INT NOT NULL");
-    echo "Renamed: fg_bom_items.raw_material_id → item_id\n";
+    echo "Renamed: fg_bom_items.raw_material_id â†’ item_id\n";
 
     // Step 4: Add new foreign key to items table
     $pdo->exec("ALTER TABLE fg_bom_items ADD CONSTRAINT fk_bom_items_item
         FOREIGN KEY (item_id) REFERENCES items(item_id)");
-    echo "Added FK: fg_bom_items.item_id → items.item_id\n";
+    echo "Added FK: fg_bom_items.item_id â†’ items.item_id\n";
 
     // Verify
     $countAfter = $pdo->query("SELECT COUNT(*) FROM fg_bom_items")->fetchColumn();
     echo "fg_bom_items rows after migration: {$countAfter}\n";
     if ($countBefore == $countAfter) {
-        echo "✓ Row count preserved\n";
+        echo "âœ“ Row count preserved\n";
     } else {
-        echo "⚠ Row count mismatch! Before: {$countBefore}, After: {$countAfter}\n";
+        echo "âš  Row count mismatch! Before: {$countBefore}, After: {$countAfter}\n";
     }
 } else {
-    echo "Column raw_material_id not found — migration may have already run or table doesn't exist\n";
+    echo "Column raw_material_id not found â€” migration may have already run or table doesn't exist\n";
 }
 
 $record3 = $pdo->prepare('INSERT INTO schema_migrations (migration_key) VALUES (?)
     ON DUPLICATE KEY UPDATE applied_at = CURRENT_TIMESTAMP');
 $record3->execute(['bom-items-fk-to-items-v1']);
 
-// ─── End Phase 3 ─────────────────────────────────────────────────────────────
+// â”€â”€â”€ End Phase 3 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// ─── Phase 4: Add batch_qty and batch_uom to fg_boms ────────────────────────
+// â”€â”€â”€ Phase 4: Add batch_qty and batch_uom to fg_boms â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 echo "\n--- Phase 4: BOM batch fields ---\n";
 
@@ -385,13 +385,13 @@ $record4 = $pdo->prepare('INSERT INTO schema_migrations (migration_key) VALUES (
     ON DUPLICATE KEY UPDATE applied_at = CURRENT_TIMESTAMP');
 $record4->execute(['bom-batch-qty-uom-v1']);
 
-// ─── End Phase 4 ─────────────────────────────────────────────────────────────
+// â”€â”€â”€ End Phase 4 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// ─── Phase 5: Procurement PO, MRP Snapshots & Production Orders ───────────
+// â”€â”€â”€ Phase 5: Procurement PO, MRP Snapshots & Production Orders â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 echo "\n--- Phase 5: Procurement PO, MRP Snapshots & Production Orders ---\n";
 
-// 1. supplier_orders — raw material procurement at factory level
+// 1. supplier_orders â€” raw material procurement at factory level
 if (!tableExists($pdo, 'supplier_orders')) {
     $pdo->exec("CREATE TABLE `supplier_orders` (
         `supplier_order_id` INT AUTO_INCREMENT PRIMARY KEY,
@@ -419,7 +419,7 @@ if (!tableExists($pdo, 'supplier_orders')) {
     echo "Already exists: supplier_orders\n";
 }
 
-// 2. mrp_runs — snapshot header (one row per PO per save)
+// 2. mrp_runs â€” snapshot header (one row per PO per save)
 if (!tableExists($pdo, 'mrp_runs')) {
     $pdo->exec("CREATE TABLE `mrp_runs` (
         `run_id` INT AUTO_INCREMENT PRIMARY KEY,
@@ -436,7 +436,7 @@ if (!tableExists($pdo, 'mrp_runs')) {
     echo "Already exists: mrp_runs\n";
 }
 
-// 3. mrp_run_items — snapshot detail (one row per component per FG)
+// 3. mrp_run_items â€” snapshot detail (one row per component per FG)
 if (!tableExists($pdo, 'mrp_run_items')) {
     $pdo->exec("CREATE TABLE `mrp_run_items` (
         `id` INT AUTO_INCREMENT PRIMARY KEY,
@@ -458,7 +458,7 @@ if (!tableExists($pdo, 'mrp_run_items')) {
     echo "Already exists: mrp_run_items\n";
 }
 
-// 4. production_orders — with mrp_saved status for MRP-generated orders
+// 4. production_orders â€” with mrp_saved status for MRP-generated orders
 if (!tableExists($pdo, 'production_orders')) {
     $pdo->exec("CREATE TABLE `production_orders` (
         `production_order_id` INT AUTO_INCREMENT PRIMARY KEY,
@@ -485,9 +485,12 @@ if (!tableExists($pdo, 'production_orders')) {
 }
 
 // Update supplier_orders status ENUM to include 'requested'
+// Guard: only extend a real ENUM that lacks the value — NEVER touch the
+// evolved VARCHAR(50) column (re-running this on a live DB once narrowed it
+// back to the old enum and blanked every approval status).
 $soStatus = $pdo->query("SELECT COLUMN_TYPE FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'supplier_orders' AND COLUMN_NAME = 'status'")->fetchColumn();
-if ($soStatus !== false && strpos($soStatus, "'requested'") === false) {
+if ($soStatus !== false && strpos($soStatus, 'enum') === 0 && strpos($soStatus, "'requested'") === false) {
     $pdo->exec("ALTER TABLE supplier_orders MODIFY status ENUM('pending','received','cancelled','requested') DEFAULT 'pending'");
     echo "Updated: supplier_orders.status enum added 'requested'\n";
 }
@@ -496,9 +499,9 @@ $record5 = $pdo->prepare('INSERT INTO schema_migrations (migration_key) VALUES (
     ON DUPLICATE KEY UPDATE applied_at = CURRENT_TIMESTAMP');
 $record5->execute(['supplier-orders-mrp-snapshots-v1']);
 
-// ─── End Phase 5 ────────────────────────────────────────────────────────────
+// â”€â”€â”€ End Phase 5 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// ─── Phase 6: Procurement PO po_id link + completed status ───────────────
+// â”€â”€â”€ Phase 6: Procurement PO po_id link + completed status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 echo "\n--- Phase 6: Procurement PO po_id link + completed status ---\n";
 
@@ -506,7 +509,7 @@ addColumn($pdo, 'supplier_orders', 'po_id', 'INT NULL', 'created_by');
 
 $soStatus = $pdo->query("SELECT COLUMN_TYPE FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'supplier_orders' AND COLUMN_NAME = 'status'")->fetchColumn();
-if ($soStatus !== false && strpos($soStatus, "'completed'") === false) {
+if ($soStatus !== false && strpos($soStatus, 'enum') === 0 && strpos($soStatus, "'completed'") === false) {
     $pdo->exec("ALTER TABLE supplier_orders MODIFY status ENUM('pending','received','cancelled','requested','completed') DEFAULT 'pending'");
     echo "Updated: supplier_orders.status enum added 'completed'\n";
 }
@@ -522,9 +525,9 @@ $backfill = $pdo->exec("UPDATE supplier_orders so
     WHERE so.po_id IS NULL AND so.status IN ('requested','pending')");
 echo "Backfilled po_id on {$backfill} existing procurement POs from MRP runs\n";
 
-// ─── End Phase 6 ──────────────────────────────────────────────────────────
+// â”€â”€â”€ End Phase 6 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// ─── Phase 7: Cleanup duplicate procurement requests ────────────────────
+// â”€â”€â”€ Phase 7: Cleanup duplicate procurement requests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 echo "\n--- Phase 7: Cleanup duplicate procurement requests ---\n";
 
@@ -542,26 +545,36 @@ $record7 = $pdo->prepare('INSERT INTO schema_migrations (migration_key) VALUES (
     ON DUPLICATE KEY UPDATE applied_at = CURRENT_TIMESTAMP');
 $record7->execute(['cleanup-duplicate-procurement-requests-v1']);
 
-// ─── End Phase 7 ──────────────────────────────────────────────────────
+// â”€â”€â”€ End Phase 7 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// ─── Phase 8: Purchasing PO / Receiving PO status updates ───────────────
+// â”€â”€â”€ Phase 8: Purchasing PO / Receiving PO status updates â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 echo "\n--- Phase 8: Purchasing PO / Receiving PO status updates ---\n";
 
 $soStatus = $pdo->query("SELECT COLUMN_TYPE FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'supplier_orders' AND COLUMN_NAME = 'status'")->fetchColumn();
-if ($soStatus !== false && strpos($soStatus, "'processed'") === false) {
+if ($soStatus !== false && strpos($soStatus, 'enum') === 0 && strpos($soStatus, "'processed'") === false) {
     $pdo->exec("ALTER TABLE supplier_orders MODIFY status ENUM('requested','pending','processed','partially_received','received','cancelled','completed') DEFAULT 'requested'");
     echo "Updated: supplier_orders.status enum added 'processed', 'partially_received'\n";
 }
 
-// Migrate existing 'pending' with supplier to 'processed'
-$migrate = $pdo->exec("UPDATE supplier_orders SET status = 'processed' WHERE status = 'pending' AND supplier_name IS NOT NULL AND supplier_name != ''");
-echo "Migrated {$migrate} pending orders with supplier to 'processed'\n";
+// One-time data migrations — only on first deploy of this phase. Re-running
+// them on a live DB (where 'pending' now means Active-for-receiving) would
+// wrongly flip every active PO to 'processed'.
+$record8check = $pdo->prepare("SELECT COUNT(*) FROM schema_migrations WHERE migration_key = 'purchasing-receiving-po-status-v1'");
+$record8check->execute();
+$phase8AlreadyRan = (bool) $record8check->fetchColumn();
+if (!$phase8AlreadyRan) {
+    // Migrate existing 'pending' with supplier to 'processed'
+    $migrate = $pdo->exec("UPDATE supplier_orders SET status = 'processed' WHERE status = 'pending' AND supplier_name IS NOT NULL AND supplier_name != ''");
+    echo "Migrated {$migrate} pending orders with supplier to 'processed'\n";
 
-// Migrate existing 'completed' to 'received'
-$migrate2 = $pdo->exec("UPDATE supplier_orders SET status = 'received' WHERE status = 'completed'");
-echo "Migrated {$migrate2} completed orders to 'received'\n";
+    // Migrate existing 'completed' to 'received'
+    $migrate2 = $pdo->exec("UPDATE supplier_orders SET status = 'received' WHERE status = 'completed'");
+    echo "Migrated {$migrate2} completed orders to 'received'\n";
+} else {
+    echo "Phase 8 data migrations already applied — skipped\n";
+}
 
 // Add index for receiving queries
 $pdo->exec("CREATE INDEX IF NOT EXISTS idx_supplier_orders_status_po ON supplier_orders(status, po_id)");
@@ -571,9 +584,9 @@ $record8 = $pdo->prepare('INSERT INTO schema_migrations (migration_key) VALUES (
     ON DUPLICATE KEY UPDATE applied_at = CURRENT_TIMESTAMP');
 $record8->execute(['purchasing-receiving-po-status-v1']);
 
-// ─── End Phase 8 ──────────────────────────────────────────────────────
+// â”€â”€â”€ End Phase 8 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// ─── Phase 9: Procurement PO per-order uom ─────────────────────────────
+// â”€â”€â”€ Phase 9: Procurement PO per-order uom â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 echo "\n--- Phase 9: Procurement PO per-order uom ---\n";
 
@@ -620,9 +633,9 @@ $record10 = $pdo->prepare('INSERT INTO schema_migrations (migration_key) VALUES 
     ON DUPLICATE KEY UPDATE applied_at = CURRENT_TIMESTAMP');
 $record10->execute(['supplier-orders-received-by-v1']);
 
-// ─── End Phase 10 ─────────────────────────────────────────────────────────────
+// â”€â”€â”€ End Phase 10 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// ─── Phase 11: Multi-BOM (default flag on fg_boms, bom_id on mrp_runs) ───────
+// â”€â”€â”€ Phase 11: Multi-BOM (default flag on fg_boms, bom_id on mrp_runs) â”€â”€â”€â”€â”€â”€â”€
 
 echo "\n--- Phase 11: Multi-BOM default flag + mrp_runs.bom_id ---\n";
 
@@ -646,9 +659,9 @@ $record11 = $pdo->prepare('INSERT INTO schema_migrations (migration_key) VALUES 
     ON DUPLICATE KEY UPDATE applied_at = CURRENT_TIMESTAMP');
 $record11->execute(['fg-boms-is-default-v1']);
 
-// ─── End Phase 11 ─────────────────────────────────────────────────────────────
+// â”€â”€â”€ End Phase 11 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// ─── Phase 12: R&D multi-BOM creation (bom_type + variant_name) ──────────────
+// â”€â”€â”€ Phase 12: R&D multi-BOM creation (bom_type + variant_name) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 echo "\n--- Phase 12: fg_boms.bom_type + variant_name ---\n";
 
@@ -664,9 +677,9 @@ $record12 = $pdo->prepare('INSERT INTO schema_migrations (migration_key) VALUES 
     ON DUPLICATE KEY UPDATE applied_at = CURRENT_TIMESTAMP');
 $record12->execute(['fg-boms-bom-type-variant-v1']);
 
-// ─── End Phase 12 ─────────────────────────────────────────────────────────────
+// â”€â”€â”€ End Phase 12 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// ─── Phase 13: Drop fg_boms.variant_name (removed Create BOM input) ──────────
+// â”€â”€â”€ Phase 13: Drop fg_boms.variant_name (removed Create BOM input) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // The VARIANT / FORMULATION NAME field is gone; formulations are told apart by
 // bom_code. Phase 12 added the column, this phase retires it everywhere.
 
@@ -683,6 +696,195 @@ $record13 = $pdo->prepare('INSERT INTO schema_migrations (migration_key) VALUES 
     ON DUPLICATE KEY UPDATE applied_at = CURRENT_TIMESTAMP');
 $record13->execute(['fg-boms-drop-variant-name-v1']);
 
-// ─── End Phase 13 ─────────────────────────────────────────────────────────────
+// â”€â”€â”€ End Phase 13 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+// â”€â”€â”€ Phase 14: users.role â€” per-department role assignments â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+echo "\n--- Phase 14: users.role ---\n";
+
+addColumn($pdo, 'users', 'role', 'VARCHAR(30) NULL DEFAULT NULL', 'department');
+$pdo->exec("UPDATE users SET role = 'whse_admin'
+    WHERE department = 'warehouse' AND (role IS NULL OR role = '')");
+echo "Backfilled: warehouse users â†’ whse_admin\n";
+$pdo->exec("UPDATE users SET role = 'qc_admin'
+    WHERE department = 'qc' AND (role IS NULL OR role = '')");
+echo "Backfilled: qc users â†’ qc_admin\n";
+
+$record14 = $pdo->prepare('INSERT INTO schema_migrations (migration_key) VALUES (?)
+    ON DUPLICATE KEY UPDATE applied_at = CURRENT_TIMESTAMP');
+$record14->execute(['users-role-v1']);
+
+// â”€â”€â”€ End Phase 14 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+// â”€â”€â”€ Phase 15: stock_movements â€” Stock In/Out ledger â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+echo "\n--- Phase 15: stock_movements ---\n";
+
+if (!tableExists($pdo, 'stock_movements')) {
+    $pdo->exec("CREATE TABLE `stock_movements` (
+        `movement_id` INT(11) NOT NULL AUTO_INCREMENT,
+        `movement_type` ENUM('IN','OUT') NOT NULL,
+        `item_id` INT(11) NOT NULL,
+        `site_code` VARCHAR(20) NOT NULL DEFAULT '001',
+        `qty` DECIMAL(15,4) NOT NULL,
+        `reference_type` VARCHAR(30) DEFAULT NULL,
+        `reference_no` VARCHAR(50) DEFAULT NULL,
+        `remarks` TEXT DEFAULT NULL,
+        `created_by` INT(11) DEFAULT NULL,
+        `date_created` DATETIME DEFAULT current_timestamp(),
+        PRIMARY KEY (`movement_id`),
+        KEY `idx_item_site` (`item_id`, `site_code`),
+        KEY `idx_type_date` (`movement_type`, `date_created`),
+        CONSTRAINT `stock_movements_ibfk_1` FOREIGN KEY (`item_id`) REFERENCES `items` (`item_id`),
+        CONSTRAINT `stock_movements_ibfk_2` FOREIGN KEY (`created_by`) REFERENCES `users` (`user_id`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
+    echo "Created: stock_movements\n";
+} else {
+    echo "Already exists: stock_movements\n";
+}
+
+$record15 = $pdo->prepare('INSERT INTO schema_migrations (migration_key) VALUES (?)
+    ON DUPLICATE KEY UPDATE applied_at = CURRENT_TIMESTAMP');
+$record15->execute(['stock-movements-v1']);
+
+// â”€â”€â”€ End Phase 15 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+// â”€â”€â”€ Phase 16: mrp_runs.approval_status â€” zero-lacking run-level gates â”€â”€â”€â”€â”€â”€
+
+echo "\n--- Phase 16: mrp_runs.approval_status ---\n";
+
+if (!columnExists($pdo, 'mrp_runs', 'approval_status')) {
+    $pdo->exec("ALTER TABLE `mrp_runs` ADD COLUMN `approval_status` VARCHAR(30) NULL DEFAULT NULL AFTER `mrp_ref`");
+    echo "Added: mrp_runs.approval_status\n";
+} else {
+    echo "Already exists: mrp_runs.approval_status\n";
+}
+
+$record16 = $pdo->prepare('INSERT INTO schema_migrations (migration_key) VALUES (?)
+    ON DUPLICATE KEY UPDATE applied_at = CURRENT_TIMESTAMP');
+$record16->execute(['mrp-runs-approval-status-v1']);
+
+// â”€â”€â”€ End Phase 16 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+// â”€â”€â”€ Phase 17: qc_analysis_reports + receiving HOLD status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+echo "\n--- Phase 17: qc_analysis_reports ---\n";
+
+if (!tableExists($pdo, 'qc_analysis_reports')) {
+    $pdo->exec("CREATE TABLE `qc_analysis_reports` (
+        `report_id` INT(11) NOT NULL AUTO_INCREMENT,
+        `run_id` INT(11) DEFAULT NULL,
+        `component_item_id` INT(11) DEFAULT NULL,
+        `receiving_item_id` INT(11) DEFAULT NULL,
+        `rm_name` VARCHAR(255) NOT NULL,
+        `supplier_name` VARCHAR(150) DEFAULT NULL,
+        `rr_number` VARCHAR(50) DEFAULT NULL,
+        `lot_number` VARCHAR(100) DEFAULT NULL,
+        `old_expiry_date` DATE DEFAULT NULL,
+        `date_delivered` DATE DEFAULT NULL,
+        `date_tested` DATE DEFAULT NULL,
+        `expiry_date` DATE DEFAULT NULL,
+        `delivery_type` ENUM('new_delivery','retest_1','retest_2','retest_3') NOT NULL DEFAULT 'new_delivery',
+        `appearance_spec` VARCHAR(255) DEFAULT NULL,
+        `appearance_result` VARCHAR(255) DEFAULT NULL,
+        `color_spec` VARCHAR(255) DEFAULT NULL,
+        `color_result` VARCHAR(255) DEFAULT NULL,
+        `odor_spec` VARCHAR(255) DEFAULT NULL,
+        `odor_result` VARCHAR(255) DEFAULT NULL,
+        `texture_spec` VARCHAR(255) DEFAULT NULL,
+        `texture_result` VARCHAR(255) DEFAULT NULL,
+        `ph_spec` VARCHAR(255) DEFAULT NULL,
+        `ph_result` VARCHAR(255) DEFAULT NULL,
+        `viscosity_spec` VARCHAR(255) DEFAULT NULL,
+        `viscosity_result` VARCHAR(255) DEFAULT NULL,
+        `sg_spec` VARCHAR(255) DEFAULT NULL,
+        `sg_result` VARCHAR(255) DEFAULT NULL,
+        `solubility_spec` VARCHAR(255) DEFAULT NULL,
+        `solubility_result` VARCHAR(255) DEFAULT NULL,
+        `alcohol_spec` VARCHAR(255) DEFAULT NULL,
+        `alcohol_result` VARCHAR(255) DEFAULT NULL,
+        `microbial_spec` VARCHAR(255) DEFAULT NULL,
+        `microbial_result` VARCHAR(255) DEFAULT NULL,
+        `disposition` ENUM('APPROVED','REJECTED','HOLD','WAIVED') NOT NULL,
+        `remarks` TEXT DEFAULT NULL,
+        `inspected_by` INT(11) DEFAULT NULL,
+        `date_inspected` DATETIME NOT NULL DEFAULT current_timestamp(),
+        PRIMARY KEY (`report_id`),
+        KEY `idx_mrp_target` (`run_id`, `component_item_id`),
+        KEY `idx_receiving_target` (`receiving_item_id`),
+        CONSTRAINT `qc_analysis_reports_ibfk_1` FOREIGN KEY (`run_id`) REFERENCES `mrp_runs` (`run_id`) ON DELETE CASCADE,
+        CONSTRAINT `qc_analysis_reports_ibfk_2` FOREIGN KEY (`component_item_id`) REFERENCES `items` (`item_id`),
+        CONSTRAINT `qc_analysis_reports_ibfk_3` FOREIGN KEY (`receiving_item_id`) REFERENCES `receiving_items` (`id`) ON DELETE CASCADE,
+        CONSTRAINT `qc_analysis_reports_ibfk_4` FOREIGN KEY (`inspected_by`) REFERENCES `users` (`user_id`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
+    echo "Created: qc_analysis_reports\n";
+} else {
+    echo "Already exists: qc_analysis_reports\n";
+}
+
+$qcStatus = $pdo->query("SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'receiving_items' AND COLUMN_NAME = 'qc_status'")->fetchColumn();
+if ($qcStatus !== false && strpos($qcStatus, "'HOLD'") === false) {
+    $pdo->exec("ALTER TABLE receiving_items MODIFY qc_status ENUM('PENDING_QC','HOLD','PASSED','REJECTED','CANCELLED') NOT NULL DEFAULT 'PENDING_QC'");
+    echo "Added HOLD to receiving_items.qc_status\n";
+} else {
+    echo "receiving_items.qc_status already has HOLD (or column missing)\n";
+}
+
+$record17 = $pdo->prepare('INSERT INTO schema_migrations (migration_key) VALUES (?)
+    ON DUPLICATE KEY UPDATE applied_at = CURRENT_TIMESTAMP');
+$record17->execute(['qc-analysis-reports-v1']);
+
+// ─── End Phase 17 ───────────────────────────────────────────────────────
+
+// ─── Phase 18: supplier_orders.po_group_id — manual multi-line PO groups ──
+
+echo "\n--- Phase 18: supplier_orders.po_group_id ---\n";
+
+if (!columnExists($pdo, 'supplier_orders', 'po_group_id')) {
+    $pdo->exec("ALTER TABLE `supplier_orders` ADD COLUMN `po_group_id` INT(11) NULL DEFAULT NULL AFTER `mrp_ref`");
+    echo "Added: supplier_orders.po_group_id\n";
+} else {
+    echo "Already exists: supplier_orders.po_group_id\n";
+}
+
+if (!indexExists($pdo, 'supplier_orders', 'idx_supplier_orders_po_group')) {
+    $pdo->exec("ALTER TABLE `supplier_orders` ADD KEY `idx_supplier_orders_po_group` (`po_group_id`)");
+    echo "Added: idx_supplier_orders_po_group\n";
+} else {
+    echo "Already exists: idx_supplier_orders_po_group\n";
+}
+
+$record18 = $pdo->prepare('INSERT INTO schema_migrations (migration_key) VALUES (?)
+    ON DUPLICATE KEY UPDATE applied_at = CURRENT_TIMESTAMP');
+$record18->execute(['supplier-orders-po-group-id-v1']);
+
+// ─── End Phase 18 ───────────────────────────────────────────────────────
+
+// ─── Phase 19: release MRP runs stranded at the retired QC gate ─────────
+// Two-gate flow: WHSE Admin → System Admin → released to Procurement.
+// QC Admin no longer gates runs (raw material inspection happens at
+// Receiving). Requires the model (books stock reservation via decideMrpRun);
+// only loads when stranded rows/headers actually exist.
+
+echo "\n--- Phase 19: release QC-gated MRP runs ---\n";
+
+$pendingQcRows = (int) $pdo->query(
+    "SELECT COUNT(*) FROM supplier_orders WHERE status = 'pending_qc_approval' AND `remove` = 0"
+)->fetchColumn();
+$pendingQcRuns = (int) $pdo->query(
+    "SELECT COUNT(*) FROM mrp_runs WHERE approval_status = 'pending_qc_approval'"
+)->fetchColumn();
+if ($pendingQcRows > 0 || $pendingQcRuns > 0) {
+    require __DIR__ . '/release_qc_gated_runs.php';
+} else {
+    echo "Nothing stranded at the retired QC gate — skipped\n";
+}
+
+$record19 = $pdo->prepare('INSERT INTO schema_migrations (migration_key) VALUES (?)
+    ON DUPLICATE KEY UPDATE applied_at = CURRENT_TIMESTAMP');
+$record19->execute(['release-qc-gated-runs-v1']);
+
+// ─── End Phase 19 ───────────────────────────────────────────────────────
 
 echo "\nSchema deployment complete.\n";

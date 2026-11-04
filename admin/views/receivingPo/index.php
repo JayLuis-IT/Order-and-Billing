@@ -31,12 +31,14 @@
     <?php
     $tabCounts = $tabCounts ?? ['pending' => 0, 'inspection' => 0, 'completed' => 0];
     // Receiving has no "All Shipments" view — only actionable pipeline tabs,
-    // with In-Transit as the landing tab.
+    // with In-Transit as the landing tab. Overage Approvals appear for System
+    // Admins only (the gate for receipts beyond the ordered quantity).
     $activeTab = $filters['tab'] ?: 'pending';
     $recvTabs = [
         'pending'    => 'In-Transit',
         'inspection' => 'For QC Inspection',
         'completed'  => 'Completed / Approved',
+        'overage'    => 'Overage Approvals',
     ];
     ?>
     <div class="card-body pb-0">
@@ -60,6 +62,67 @@
             <?php endforeach; ?>
         </ul>
     </div>
+    <?php if ($activeTab === 'overage'): ?>
+    <div class="table-responsive">
+        <table class="table table-hover mb-0">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>PO / MRP REF</th>
+                    <th>Supplier</th>
+                    <th>Item Code</th>
+                    <th>Description</th>
+                    <th class="text-end">Qty Ordered</th>
+                    <th class="text-end">Received So Far</th>
+                    <th class="text-end">Requested Overage</th>
+                    <th>Requested By</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php if (empty($overageRequests)): ?>
+                <tr><td colspan="10" class="text-center text-muted py-4">No pending over-receipt approval requests.</td></tr>
+                <?php else: ?>
+                <?php foreach ($overageRequests as $index => $ov): ?>
+                <?php
+                    $hasPoRef = !empty($ov['po_ref']) && trim((string) $ov['po_ref']) !== '';
+                    $mrpRef = (string) ($ov['mrp_ref'] ?? '');
+                    if ($mrpRef === '' && !empty($ov['mrp_run_id'])) {
+                        $mrpRef = 'MRP-#' . $ov['mrp_run_id'];
+                    }
+                ?>
+                <tr>
+                    <td title="Order #<?= $ov['supplier_order_id'] ?>"><?= $index + 1 ?></td>
+                    <td>
+                        <?= htmlspecialchars($hasPoRef ? $ov['po_ref'] : '-') ?>
+                        <?php if ($mrpRef !== ''): ?>
+                            <div class="mt-1"><span class="badge bg-secondary"><?= htmlspecialchars($mrpRef) ?></span></div>
+                        <?php endif; ?>
+                    </td>
+                    <td><?= htmlspecialchars($ov['supplier_name']) ?></td>
+                    <td><code><?= htmlspecialchars($ov['item_code']) ?></code></td>
+                    <td><?= htmlspecialchars($ov['item_description']) ?></td>
+                    <td class="text-end"><?= formatQty($ov['quantity']) ?> <?= htmlspecialchars($ov['item_uom'] ?? '') ?> <span class="text-muted small">(ordered)</span></td>
+                    <td class="text-end"><?= formatQty($ov['received_qty']) ?> <?= htmlspecialchars($ov['item_uom'] ?? '') ?></td>
+                    <td class="text-end"><span class="badge bg-danger">+<?= formatQty($ov['overage_request_qty']) ?> <?= htmlspecialchars($ov['item_uom'] ?? '') ?></span></td>
+                    <td>Warehouse receipt attempt</td>
+                    <td>
+                        <button type="button" class="btn btn-success btn-sm" title="Approve the requested overage amount"
+                                onclick="submitOverageApproval(<?= $ov['supplier_order_id'] ?>, true)">
+                            <i class="bi bi-check-lg"></i> Approve
+                        </button>
+                        <button type="button" class="btn btn-outline-danger btn-sm" title="Reject the overage request"
+                                onclick="submitOverageApproval(<?= $ov['supplier_order_id'] ?>, false)">
+                            <i class="bi bi-x-lg"></i> Reject
+                        </button>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+                <?php endif; ?>
+            </tbody>
+        </table>
+    </div>
+    <?php else: ?>
     <div class="table-responsive">
         <table class="table table-hover mb-0">
             <thead>
@@ -141,4 +204,31 @@
             </tbody>
         </table>
     </div>
+    <?php endif; ?>
 </div>
+
+<!-- Overage approval actions: hidden POST form driven by row buttons -->
+<form id="overageApprovalForm" method="POST" style="display:none">
+    <input type="hidden" name="supplier_order_id" id="overageRequestId">
+    <input type="hidden" name="reject_reason" id="overageRejectReason">
+</form>
+<script>
+function submitOverageApproval(id, approve) {
+    var form = document.getElementById('overageApprovalForm');
+    document.getElementById('overageRequestId').value = id;
+    if (approve) {
+        Dlg.confirm('Approve this over-receipt? The warehouse may then receive the approved excess beyond the ordered quantity.').then(function(ok) {
+            if (!ok) return;
+            form.action = '?controller=admin&action=approveOverageRequest';
+            form.submit();
+        });
+        return;
+    }
+    Dlg.prompt('Reason for rejecting this over-receipt request (required):', { requiredMessage: 'A rejection reason is required.' }).then(function(reason) {
+        if (reason === null || reason === '') return;
+        document.getElementById('overageRejectReason').value = reason;
+        form.action = '?controller=admin&action=rejectOverageRequest';
+        form.submit();
+    });
+}
+</script>

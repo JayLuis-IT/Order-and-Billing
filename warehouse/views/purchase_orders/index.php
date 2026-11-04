@@ -723,9 +723,9 @@ document.getElementById('createPOForm').addEventListener('submit', function(e) {
     var poDate = document.querySelector('#createPOForm input[name="customer_po_date"]').value;
     var prodType = document.querySelector('#createPOForm select[name="production_type"]').value;
 
-    if (!customerId) { alert('Please select a customer.'); return; }
-    if (!poNumber) { alert('Please enter a PO number.'); return; }
-    if (!poDate) { alert('Please enter a PO date.'); return; }
+    if (!customerId) { Dlg.alert('Please select a customer.'); return; }
+    if (!poNumber) { Dlg.alert('Please enter a PO number.'); return; }
+    if (!poDate) { Dlg.alert('Please enter a PO date.'); return; }
 
     var items = [];
     document.querySelectorAll('#itemsContainer .item-row').forEach(function(row) {
@@ -743,7 +743,7 @@ document.getElementById('createPOForm').addEventListener('submit', function(e) {
         }
     });
 
-    if (items.length === 0) { alert('Please add at least one item.'); return; }
+    if (items.length === 0) { Dlg.alert('Please add at least one item.'); return; }
 
     document.getElementById('itemsJson').value = JSON.stringify(items);
 
@@ -860,7 +860,7 @@ document.querySelectorAll('.view-po-btn').forEach(function(btn) {
             })
             .catch(function(error) {
                 console.error('Error:', error);
-                alert('Failed to load PO details');
+                Dlg.alert('Failed to load PO details');
             });
     });
 });
@@ -1088,7 +1088,7 @@ document.querySelectorAll('.edit-po-btn').forEach(function(btn) {
                     });
             })
             .catch(function() {
-                alert('Failed to load PO details');
+                Dlg.alert('Failed to load PO details');
             });
     });
 });
@@ -1121,7 +1121,7 @@ document.getElementById('editPOForm').addEventListener('submit', function(e) {
     e.preventDefault();
 
     var poDate = document.getElementById('editPODate').value;
-    if (!poDate) { alert('Please enter a PO date.'); return; }
+    if (!poDate) { Dlg.alert('Please enter a PO date.'); return; }
 
     var items = [];
     document.querySelectorAll('#editItemsContainer .item-row').forEach(function(row) {
@@ -1141,7 +1141,7 @@ document.getElementById('editPOForm').addEventListener('submit', function(e) {
         }
     });
 
-    if (items.length === 0) { alert('Please add at least one item.'); return; }
+    if (items.length === 0) { Dlg.alert('Please add at least one item.'); return; }
 
     document.getElementById('editItemsJson').value = JSON.stringify(items);
 

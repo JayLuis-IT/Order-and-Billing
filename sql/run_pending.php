@@ -19,7 +19,7 @@ require_once __DIR__ . '/../core/Config.php';
 if (!$isCli) {
     App\Core\Config::init();
     echo '<!DOCTYPE html><html><head><title>Pending Migrations</title>';
-    echo '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">';
+    echo '<link rel="stylesheet" href="../public/css/bootstrap.min.css">';
     echo '<style>body{background:#1a1a2e;color:#e0e0e0;padding:2rem;font-family:monospace}';
     echo '.step{padding:4px 0;border-bottom:1px solid #333}';
     echo '.ok{color:#4ade80}.skip{color:#facc15}.err{color:#f87171}.info{color:#94a3b8}</style>';

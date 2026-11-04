@@ -325,7 +325,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     modal.show();
                 })
                 .catch(function(error) {
-                    alert('Failed to load PO details: ' + error.message);
+                    Dlg.alert('Failed to load PO details: ' + error.message);
                 });
         });
     });

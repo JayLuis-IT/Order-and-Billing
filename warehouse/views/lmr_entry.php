@@ -157,12 +157,7 @@
             </div>
             <div class="col-md-4">
                 <label class="form-label fw-semibold">Batch / Lot Series</label>
-                <select name="lot_series" class="form-select">
-                    <option value="">Select</option>
-                    <?php $savedLotSeries = htmlspecialchars($lmr['lot_series'] ?? ''); for ($i = 1; $i <= 9; $i++): $bln = '1/' . $i; ?>
-                        <option value="<?= $bln ?>"<?= $savedLotSeries === $bln ? ' selected' : '' ?>><?= $bln ?></option>
-                    <?php endfor; ?>
-                </select>
+                <input type="text" name="lot_series" class="form-control" placeholder="Enter batch / lot series" value="<?= htmlspecialchars($lmr['lot_series'] ?? '') ?>">
             </div>
             <div class="col-md-4">
                 <label class="form-label fw-semibold">Lot Number</label>
@@ -197,6 +192,7 @@
                             <th class="text-end">Req. Qty</th>
                             <th class="text-end">SOH</th>
                             <th>Status</th>
+                            <th>Lots</th>
                         </tr>
                     </thead>
                     <tbody id="bomComponentBody"></tbody>
@@ -206,6 +202,44 @@
         </div>
     </div>
 </form>
+
+<!-- Lot allocation modal -->
+<div class="modal fade" id="lotAllocModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="lotAllocTitle">Allocate Lots</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="lotAllocModalError" class="alert alert-danger py-2" style="display:none;"></div>
+                <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+                    <div><strong>Required:</strong> <span id="lotAllocRequired">0</span></div>
+                    <div><strong>Allocated:</strong> <span id="lotAllocTotal">0</span> &nbsp;|&nbsp; <strong>Remaining:</strong> <span id="lotAllocRemaining">0</span></div>
+                </div>
+                <table class="table table-sm align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Lot No.</th>
+                            <th>Received</th>
+                            <th>Expiry</th>
+                            <th class="text-end">Available Qty</th>
+                            <th style="width:150px;">Allocate Qty</th>
+                        </tr>
+                    </thead>
+                    <tbody id="lotAllocBody"></tbody>
+                </table>
+                <small class="text-muted d-block">Lots are sorted FIFO — oldest received stock first.</small>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary me-auto" id="lotAllocFifo"><i class="bi bi-arrow-down-up me-1"></i>Auto FIFO</button>
+                <button type="button" class="btn btn-outline-danger" id="lotAllocClear">Clear</button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="lotAllocConfirm">Save Allocation</button>
+            </div>
+        </div>
+    </div>
+</div>
 
 <script>
 document.addEventListener('DOMContentLoaded', function () {
@@ -226,6 +260,22 @@ document.addEventListener('DOMContentLoaded', function () {
     const bomShortageWarning = document.getElementById('bomShortageWarning');
 
     let bomFetchTimeout = null;
+
+    // Multi-lot allocation state: { component_item_id: { item_code, description, required, allocs: [...] } }
+    var lotAllocState = {};
+    var currentAllocItemId = null;
+    var currentLotList = [];
+    // Edit mode: prefill previously saved lot allocations
+    (function () {
+        var existing = <?= json_encode($lot_allocations ?? []) ?>;
+        (existing || []).forEach(function (a) {
+            var iid = String(a.item_id);
+            if (!lotAllocState[iid]) {
+                lotAllocState[iid] = { item_code: a.item_code || '', description: '', required: null, allocs: [] };
+            }
+            lotAllocState[iid].allocs.push({ lot_number: a.lot_number, allocated_qty: parseFloat(a.allocated_qty) });
+        });
+    })();
 
     var allBomOptions = [];
     var bomOptionsCaptured = false;
@@ -389,15 +439,41 @@ document.addEventListener('DOMContentLoaded', function () {
             var statusBadge = c.status === 'available'
                 ? '<span class="badge bg-success"><i class="bi bi-check-lg"></i> In Stock</span>'
                 : '<span class="badge bg-danger"><i class="bi bi-x-lg"></i> Shortage ' + c.shortage.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4}) + '</span>';
-            html += '<tr>';
+
+            // Sync multi-lot allocation state with the current breakdown
+            var compId = c.component_item_id ? String(c.component_item_id) : '';
+            if (compId && Number(c.required_qty) > 0) {
+                var st = lotAllocState[compId];
+                if (!st) {
+                    st = lotAllocState[compId] = { item_code: c.item_code, description: c.item_description || '', required: null, allocs: [] };
+                }
+                st.item_code = c.item_code;
+                st.description = c.item_description || '';
+                st.required = parseFloat(c.required_qty);
+            }
+
+            var allocCell = '';
+            if (compId) {
+                var stNow = lotAllocState[compId];
+                var allocSummary = (stNow && stNow.allocs.length) ? stNow.allocs.length + ' lot(s)' : 'Allocate';
+                allocCell = '<a href="#" class="lot-alloc-trigger" data-item-id="' + escapeHtml(compId) + '"' +
+                    ' data-item-code="' + escapeHtml(c.item_code) + '"' +
+                    ' data-description="' + escapeHtml(c.item_description || '') + '"' +
+                    ' data-required="' + c.required_qty + '">' +
+                    '<span class="badge ' + (stNow && stNow.allocs.length ? 'bg-info text-dark' : 'text-body-secondary border') + '"' + (stNow && stNow.allocs.length ? '' : ' style="border:1px solid;text-decoration:none;"') + '>' +
+                    '<i class="bi bi-boxes me-1"></i>' + allocSummary + '</span></a>';
+            }
+            html += '<tr data-comp-item-id="' + escapeHtml(compId) + '">';
             html += '<td><strong>' + c.item_code + '</strong> ' + (c.item_description || '') + '</td>';
             html += '<td>' + (c.item_uom || '') + '</td>';
             html += '<td class="text-end">' + c.required_qty.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4}) + '</td>';
             html += '<td class="text-end">' + c.soh.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4}) + '</td>';
             html += '<td>' + statusBadge + '</td>';
+            html += '<td class="lot-alloc-cell">' + (allocCell || '<span class="text-muted">—</span>') + '</td>';
             html += '</tr>';
         });
         bomComponentBody.innerHTML = html;
+        updateAllRowAllocBadges();
     }
 
     function fetchBomBreakdown(itemId, qty) {
@@ -440,6 +516,204 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     headerQtyOrdered.addEventListener('input', refreshHeaderBomBreakdown);
+
+    // ---------- Multi-lot allocation (FIFO) ----------
+    var lotAllocModalEl = document.getElementById('lotAllocModal');
+    var lotAllocErrorEl = document.getElementById('lotAllocModalError');
+    var lotAllocBody = document.getElementById('lotAllocBody');
+    var lotAllocBs = (typeof bootstrap !== 'undefined' && bootstrap.Modal)
+        ? new bootstrap.Modal(lotAllocModalEl) : null;
+
+    function fmtQty(v) {
+        return Number(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+    }
+
+    function showLotAllocError(msg) {
+        lotAllocErrorEl.textContent = msg;
+        lotAllocErrorEl.style.display = 'block';
+    }
+
+    function hideLotAllocError() {
+        lotAllocErrorEl.style.display = 'none';
+        lotAllocErrorEl.textContent = '';
+    }
+
+    function getLmrIdValue() {
+        var hidden = document.querySelector('#lmrEntryForm input[name="lmr_id"]');
+        return hidden ? parseInt(hidden.value, 10) || 0 : 0;
+    }
+
+    function allocInputs() {
+        return Array.prototype.slice.call(lotAllocBody.querySelectorAll('input[data-lot-number]'));
+    }
+
+    function allocCurrentTotals() {
+        var st = lotAllocState[currentAllocItemId];
+        var required = st && st.required != null ? parseFloat(st.required) : 0;
+        var sum = allocInputs().reduce(function (acc, inp) {
+            return acc + (parseFloat(inp.value) || 0);
+        }, 0);
+        return { required: required, sum: sum, remaining: required - sum };
+    }
+
+    function refreshAllocSummary() {
+        var t = allocCurrentTotals();
+        document.getElementById('lotAllocRequired').textContent = fmtQty(t.required);
+        var totalEl = document.getElementById('lotAllocTotal');
+        var remEl = document.getElementById('lotAllocRemaining');
+        totalEl.textContent = fmtQty(t.sum);
+        totalEl.classList.toggle('text-success', Math.abs(t.sum - t.required) < 1e-6 && t.required > 0);
+        totalEl.classList.toggle('text-danger', t.sum - t.required > 1e-6);
+        remEl.textContent = fmtQty(t.remaining);
+        remEl.classList.toggle('text-success', Math.abs(t.remaining) < 1e-6 && t.required > 0);
+        remEl.classList.toggle('text-warning', t.remaining > 1e-6);
+    }
+
+    function openLotAllocModal(itemId, itemCode, description, required) {
+        currentAllocItemId = String(itemId);
+        var st = lotAllocState[currentAllocItemId] || { item_code: itemCode, description: description, required: required, allocs: [] };
+        st.required = required;
+        lotAllocState[currentAllocItemId] = st;
+        document.getElementById('lotAllocTitle').textContent =
+            'Allocate Lots — ' + (itemCode || '') + (description ? ' (' + description + ')' : '');
+        document.getElementById('lotAllocRequired').textContent = fmtQty(required);
+        hideLotAllocError();
+        lotAllocBody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-3"><span class="spinner-border spinner-border-sm me-1"></span>Loading lots...</td></tr>';
+
+        var lmrId = getLmrIdValue();
+        if (lotAllocBs) lotAllocBs.show();
+
+        fetch('?controller=lmr&action=getLotStock&item_id=' + encodeURIComponent(itemId) + '&lmr_id=' + encodeURIComponent(lmrId), {
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (data.error) {
+                    lotAllocBody.innerHTML = '<tr><td colspan="5" class="text-center text-danger py-3">' + escapeHtml(data.error) + '</td></tr>';
+                    return;
+                }
+                currentLotList = data.lots || [];
+                if (!currentLotList.length) {
+                    lotAllocBody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-3">No inventory lots on hand for this item.</td></tr>';
+                    refreshAllocSummary();
+                    return;
+                }
+                var existingByLot = {};
+                (st.allocs || []).forEach(function (a) {
+                    existingByLot[a.lot_number] = (existingByLot[a.lot_number] || 0) + parseFloat(a.allocated_qty || 0);
+                });
+                // Merge in existing saved allocations that are not in the live lot list
+                Object.keys(existingByLot).forEach(function (lot) {
+                    var found = currentLotList.some(function (l) { return l.lot_number === lot; });
+                    if (!found) {
+                        currentLotList.push({ lot_number: lot, available_qty: existingByLot[lot], qty_on_hand: existingByLot[lot], received_date: null, expiry_date: null });
+                    }
+                });
+                var rows = currentLotList.map(function (l) {
+                    var allocQty = existingByLot[l.lot_number] || 0;
+                    return '<tr>' +
+                        '<td><strong>' + escapeHtml(l.lot_number) + '</strong></td>' +
+                        '<td>' + (l.received_date || '—') + '</td>' +
+                        '<td>' + (l.expiry_date || '—') + '</td>' +
+                        '<td class="text-end">' + fmtQty(l.available_qty) + '</td>' +
+                        '<td><input type="number" class="form-control form-control-sm text-end" min="0" step="0.0001" ' +
+                        'data-lot-number="' + escapeHtml(l.lot_number) + '" data-available="' + l.available_qty + '" value="' + allocQty + '"></td>' +
+                        '</tr>';
+                }).join('');
+                lotAllocBody.innerHTML = rows;
+                refreshAllocSummary();
+            })
+            .catch(function () {
+                lotAllocBody.innerHTML = '<tr><td colspan="5" class="text-center text-danger py-3">Failed to load lots.</td></tr>';
+            });
+    }
+
+    bomComponentBody.addEventListener('click', function (e) {
+        var trigger = e.target.closest('.lot-alloc-trigger');
+        if (!trigger) return;
+        e.preventDefault();
+        openLotAllocModal(
+            trigger.dataset.itemId,
+            trigger.dataset.itemCode || '',
+            trigger.dataset.description || '',
+            parseFloat(trigger.dataset.required || 0)
+        );
+    });
+
+    lotAllocBody.addEventListener('input', function (e) {
+        if (!e.target.matches('input[data-lot-number]')) return;
+        var inp = e.target;
+        var avail = parseFloat(inp.dataset.available || 0);
+        var v = parseFloat(inp.value);
+        if (!isNaN(v) && v > avail) inp.value = avail;  // cap to available balance
+        refreshAllocSummary();
+    });
+
+    document.getElementById('lotAllocFifo').addEventListener('click', function () {
+        if (!currentLotList.length) return;
+        if (currentAllocItemId) hideLotAllocError();
+        var remaining = allocCurrentTotals().required;
+        currentLotList.forEach(function (l) {
+            var inp = lotAllocBody.querySelector('input[data-lot-number="' + CSS.escape(l.lot_number) + '"]');
+            if (!inp || remaining <= 1e-6) return;
+            var qty = Math.min(remaining, parseFloat(l.available_qty));
+            inp.value = Math.round(qty * 10000) / 10000;
+            remaining -= qty;
+        });
+        refreshAllocSummary();
+    });
+
+    document.getElementById('lotAllocClear').addEventListener('click', function () {
+        allocInputs().forEach(function (inp) { inp.value = ''; });
+        refreshAllocSummary();
+    });
+
+    function updateRowAllocBadge(itemId) {
+        var trigger = bomComponentBody.querySelector('.lot-alloc-trigger[data-item-id="' + CSS.escape(String(itemId)) + '"]');
+        if (!trigger) return;
+        var st = lotAllocState[currentAllocItemId === String(itemId) ? currentAllocItemId : String(itemId)];
+        var count = (st && st.allocs && st.allocs.length) ? st.allocs.length : 0;
+        trigger.innerHTML = '<span class="badge ' + (count ? 'bg-info text-dark' : 'text-body-secondary border') + '"' + (count ? '' : ' style="border:1px solid;text-decoration:none;"') + '>' +
+            '<i class="bi bi-boxes me-1"></i>' + (count ? count + ' lot(s)' : 'Allocate') + '</span>';
+    }
+
+    function updateAllRowAllocBadges() {
+        Object.keys(lotAllocState).forEach(function (itemId) {
+            var st = lotAllocState[itemId];
+            if (st && st.allocs && st.allocs.length) updateRowAllocBadge(itemId);
+        });
+    }
+
+    document.getElementById('lotAllocConfirm').addEventListener('click', function () {
+        var st = lotAllocState[currentAllocItemId];
+        if (!st) { return; }
+        hideLotAllocError();
+        var allocs = [];
+        var overAlloc = false;
+        allocInputs().forEach(function (inp) {
+            var q = parseFloat(inp.value);
+            if (!isNaN(q) && q > 0) {
+                var avail = parseFloat(inp.dataset.available || 0);
+                if (q > avail + 1e-6) {
+                    overAlloc = true;
+                    showLotAllocError('Allocated ' + fmtQty(q) + ' from lot "' + escapeHtml(inp.dataset.lotNumber) + '" exceeds its available balance of ' + fmtQty(avail) + '.');
+                }
+                allocs.push({ lot_number: inp.dataset.lotNumber, allocated_qty: q });
+            }
+        });
+        if (overAlloc) return;
+
+        var t = allocCurrentTotals();
+        if (t.required > 0 && Math.abs(t.sum - t.required) > 1e-6) {
+            showLotAllocError('Total allocated (' + fmtQty(t.sum) + ') must equal the required quantity (' + fmtQty(t.required) + '). Difference: ' + fmtQty(t.remaining) + '.');
+            return;
+        }
+
+        st.allocs = allocs;
+        updateRowAllocBadge(currentAllocItemId);
+        if (lotAllocBs) lotAllocBs.hide();
+    });
+    // ---------- end multi-lot allocation ----------
 
     var FORM_ALERT_FADE_DELAY = 4500;
     var FORM_ALERT_FADE_MS = 600;
@@ -552,6 +826,21 @@ document.addEventListener('DOMContentLoaded', function () {
                 errors.push('Cannot save: stock shortages exist for component items listed in the Component Breakdown.');
             }
 
+            // Lot allocation validation: sums must match the required quantity
+            var allocPayload = Object.keys(lotAllocState).map(function (itemId) {
+                var st = lotAllocState[itemId];
+                if (!st || !st.allocs) return null;
+                var allocSum = st.allocs.reduce(function (acc, a) { return acc + (parseFloat(a.allocated_qty) || 0); }, 0);
+                if (allocSum <= 1e-6) return null;
+                if (st.required != null && Math.abs(allocSum - parseFloat(st.required)) > 1e-6) {
+                    errors.push('Lot allocation for <strong>' + escapeHtml(st.item_code || itemId) + '</strong> totals ' + fmtQty(allocSum) + ' but must equal the required quantity ' + fmtQty(st.required) + '.');
+                    return null;
+                }
+                return st.allocs.map(function (a) {
+                    return { item_id: itemId, item_code: st.item_code, lot_number: a.lot_number, allocated_qty: a.allocated_qty };
+                });
+            }).filter(Boolean);
+
             if (errors.length > 0) {
                 showFormValidation('<strong>Please fix the following:</strong><ul><li>' + errors.join('</li><li>') + '</li></ul>');
                 if (firstInvalid) firstInvalid.focus();
@@ -564,6 +853,7 @@ document.addEventListener('DOMContentLoaded', function () {
             setSubmitLoading(true);
 
             var formData = new FormData(document.getElementById('lmrEntryForm'));
+            formData.append('lot_allocations_json', JSON.stringify(allocPayload.flatMap ? allocPayload.flat() : Array.prototype.concat.apply([], allocPayload)));
 
             var response = await fetch('?controller=lmr&action=store', {
                 method: 'POST',
@@ -605,7 +895,7 @@ document.addEventListener('DOMContentLoaded', function () {
         } catch (err) {
             setSubmitLoading(false);
             console.error('Client JS Error:', err);
-            alert('Script error: ' + err.message);
+            Dlg.alert('Script error: ' + err.message);
         }
     });
 

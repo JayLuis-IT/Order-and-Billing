@@ -1,4 +1,4 @@
--- Manufacturing Management System Database Schema
+﻿-- Manufacturing Management System Database Schema
 -- Generated from the live `manufacturing_mgmt` database on 2026-10-13 (MariaDB 10.4.32).
 -- Regenerate with:
 --   mysqldump -u root --no-data --skip-add-drop-table --routines=FALSE --triggers=FALSE manufacturing_mgmt
@@ -460,7 +460,7 @@ CREATE TABLE IF NOT EXISTS `mrp_run_items` (
   KEY `run_id` (`run_id`),
   KEY `fg_item_id` (`fg_item_id`),
   KEY `component_item_id` (`component_item_id`),
-  CONSTRAINT `mrp_run_items_ibfk_1` FOREIGN KEY (`run_id`) REFERENCES `mrp_runs` (`run_id`) ON DELETE CASCADE,
+  CONSTRAINT `mrp_run_items_ibfk_1` FOREIGN KEY (`run_id`) REFERENCES `mrp_runs` (`run_id`) ON DELETE CASCADE ON DELETE CASCADE,
   CONSTRAINT `mrp_run_items_ibfk_2` FOREIGN KEY (`fg_item_id`) REFERENCES `items` (`item_id`),
   CONSTRAINT `mrp_run_items_ibfk_3` FOREIGN KEY (`component_item_id`) REFERENCES `items` (`item_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
@@ -483,6 +483,7 @@ CREATE TABLE IF NOT EXISTS `mrp_runs` (
   `fg_code` varchar(50) DEFAULT NULL,
   `target_qty` decimal(15,4) DEFAULT NULL,
   `mrp_ref` varchar(30) DEFAULT NULL,
+  `approval_status` varchar(30) DEFAULT NULL COMMENT 'Zero-lacking runs: pending_whse_approval|pending_sysadmin_approval|pending_qc_approval|approved|cancelled',
   PRIMARY KEY (`run_id`),
   KEY `po_id` (`po_id`),
   KEY `customer_id` (`customer_id`),
@@ -667,7 +668,7 @@ CREATE TABLE IF NOT EXISTS `production_orders` (
   CONSTRAINT `production_orders_ibfk_1` FOREIGN KEY (`po_id`) REFERENCES `purchase_orders` (`po_id`),
   CONSTRAINT `production_orders_ibfk_2` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`customer_id`),
   CONSTRAINT `production_orders_ibfk_3` FOREIGN KEY (`item_id`) REFERENCES `items` (`item_id`),
-  CONSTRAINT `production_orders_ibfk_4` FOREIGN KEY (`run_id`) REFERENCES `mrp_runs` (`run_id`),
+  CONSTRAINT `production_orders_ibfk_4` FOREIGN KEY (`run_id`) REFERENCES `mrp_runs` (`run_id`) ON DELETE CASCADE,
   CONSTRAINT `production_orders_ibfk_5` FOREIGN KEY (`created_by`) REFERENCES `users` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
@@ -753,6 +754,60 @@ CREATE TABLE IF NOT EXISTS `purchase_orders` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Table structure for table `qc_analysis_reports`
+--
+
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE IF NOT EXISTS `qc_analysis_reports` (
+  `report_id` int(11) NOT NULL AUTO_INCREMENT,
+  `run_id` int(11) DEFAULT NULL,
+  `component_item_id` int(11) DEFAULT NULL,
+  `receiving_item_id` int(11) DEFAULT NULL,
+  `rm_name` varchar(255) NOT NULL,
+  `supplier_name` varchar(150) DEFAULT NULL,
+  `rr_number` varchar(50) DEFAULT NULL,
+  `lot_number` varchar(100) DEFAULT NULL,
+  `old_expiry_date` date DEFAULT NULL,
+  `date_delivered` date DEFAULT NULL,
+  `date_tested` date DEFAULT NULL,
+  `expiry_date` date DEFAULT NULL,
+  `delivery_type` enum('new_delivery','retest_1','retest_2','retest_3') NOT NULL DEFAULT 'new_delivery',
+  `appearance_spec` varchar(255) DEFAULT NULL,
+  `appearance_result` varchar(255) DEFAULT NULL,
+  `color_spec` varchar(255) DEFAULT NULL,
+  `color_result` varchar(255) DEFAULT NULL,
+  `odor_spec` varchar(255) DEFAULT NULL,
+  `odor_result` varchar(255) DEFAULT NULL,
+  `texture_spec` varchar(255) DEFAULT NULL,
+  `texture_result` varchar(255) DEFAULT NULL,
+  `ph_spec` varchar(255) DEFAULT NULL,
+  `ph_result` varchar(255) DEFAULT NULL,
+  `viscosity_spec` varchar(255) DEFAULT NULL,
+  `viscosity_result` varchar(255) DEFAULT NULL,
+  `sg_spec` varchar(255) DEFAULT NULL,
+  `sg_result` varchar(255) DEFAULT NULL,
+  `solubility_spec` varchar(255) DEFAULT NULL,
+  `solubility_result` varchar(255) DEFAULT NULL,
+  `alcohol_spec` varchar(255) DEFAULT NULL,
+  `alcohol_result` varchar(255) DEFAULT NULL,
+  `microbial_spec` varchar(255) DEFAULT NULL,
+  `microbial_result` varchar(255) DEFAULT NULL,
+  `disposition` enum('APPROVED','REJECTED','HOLD','WAIVED') NOT NULL,
+  `remarks` text DEFAULT NULL,
+  `inspected_by` int(11) DEFAULT NULL,
+  `date_inspected` datetime NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`report_id`),
+  KEY `idx_mrp_target` (`run_id`,`component_item_id`),
+  KEY `idx_receiving_target` (`receiving_item_id`),
+  CONSTRAINT `qc_analysis_reports_ibfk_1` FOREIGN KEY (`run_id`) REFERENCES `mrp_runs` (`run_id`) ON DELETE CASCADE,
+  CONSTRAINT `qc_analysis_reports_ibfk_2` FOREIGN KEY (`component_item_id`) REFERENCES `items` (`item_id`),
+  CONSTRAINT `qc_analysis_reports_ibfk_3` FOREIGN KEY (`receiving_item_id`) REFERENCES `receiving_items` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `qc_analysis_reports_ibfk_4` FOREIGN KEY (`inspected_by`) REFERENCES `users` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
 -- Table structure for table `qc_inspections`
 --
 
@@ -769,7 +824,7 @@ CREATE TABLE IF NOT EXISTS `qc_inspections` (
   `inspected_at` datetime NOT NULL DEFAULT current_timestamp(),
   PRIMARY KEY (`inspection_id`),
   KEY `idx_receiving_item_id` (`receiving_item_id`),
-  CONSTRAINT `fk_qc_receiving_item` FOREIGN KEY (`receiving_item_id`) REFERENCES `receiving_items` (`id`) ON DELETE CASCADE
+  CONSTRAINT `fk_qc_receiving_item` FOREIGN KEY (`receiving_item_id`) REFERENCES `receiving_items` (`id`) ON DELETE CASCADE ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -797,7 +852,7 @@ CREATE TABLE IF NOT EXISTS `receiving_items` (
   `received_date` date NOT NULL,
   `received_by` int(11) DEFAULT NULL,
   `remarks` text DEFAULT NULL,
-  `qc_status` enum('PENDING_QC','PASSED','REJECTED','CANCELLED') NOT NULL DEFAULT 'PENDING_QC',
+  `qc_status` enum('PENDING_QC','HOLD','PASSED','REJECTED','CANCELLED') NOT NULL DEFAULT 'PENDING_QC',
   `inspected_by` int(11) DEFAULT NULL,
   `inspected_at` datetime DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
@@ -845,6 +900,31 @@ CREATE TABLE IF NOT EXISTS `schema_migrations` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Table structure for table `stock_movements`
+--
+
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE IF NOT EXISTS `stock_movements` (
+  `movement_id` int(11) NOT NULL AUTO_INCREMENT,
+  `movement_type` enum('IN','OUT') NOT NULL,
+  `item_id` int(11) NOT NULL,
+  `site_code` varchar(20) NOT NULL DEFAULT '001',
+  `qty` decimal(15,4) NOT NULL,
+  `reference_type` varchar(30) DEFAULT NULL,
+  `reference_no` varchar(50) DEFAULT NULL,
+  `remarks` text DEFAULT NULL,
+  `created_by` int(11) DEFAULT NULL,
+  `date_created` datetime DEFAULT current_timestamp(),
+  PRIMARY KEY (`movement_id`),
+  KEY `idx_item_site` (`item_id`,`site_code`),
+  KEY `idx_type_date` (`movement_type`,`date_created`),
+  CONSTRAINT `stock_movements_ibfk_1` FOREIGN KEY (`item_id`) REFERENCES `items` (`item_id`),
+  CONSTRAINT `stock_movements_ibfk_2` FOREIGN KEY (`created_by`) REFERENCES `users` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
 -- Table structure for table `supplier_orders`
 --
 
@@ -872,10 +952,12 @@ CREATE TABLE IF NOT EXISTS `supplier_orders` (
   `last_update` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
   `mrp_run_id` int(11) DEFAULT NULL,
   `mrp_ref` varchar(30) DEFAULT NULL,
+  `po_group_id` int(11) DEFAULT NULL,
   PRIMARY KEY (`supplier_order_id`),
   KEY `item_id` (`item_id`),
   KEY `created_by` (`created_by`),
   KEY `idx_supplier_orders_mrp_run` (`mrp_run_id`),
+  KEY `idx_supplier_orders_po_group` (`po_group_id`),
   KEY `received_by` (`received_by`),
   CONSTRAINT `supplier_orders_ibfk_1` FOREIGN KEY (`item_id`) REFERENCES `items` (`item_id`),
   CONSTRAINT `supplier_orders_ibfk_2` FOREIGN KEY (`created_by`) REFERENCES `users` (`user_id`),
@@ -896,6 +978,7 @@ CREATE TABLE IF NOT EXISTS `users` (
   `password` varchar(255) NOT NULL,
   `full_name` varchar(255) NOT NULL,
   `department` enum('admin','warehouse','production','finance','qc','qa','rnd') NOT NULL,
+  `role` varchar(30) DEFAULT NULL COMMENT 'whse_admin|whse_officer|whse_ppic|whse_procurement|whse_receiving|qc_admin|qc_inspector',
   `status` tinyint(1) DEFAULT 1 COMMENT '0=inactive, 1=active',
   `remove` tinyint(1) DEFAULT 0 COMMENT '0=active, 1=soft deleted',
   `date_created` datetime DEFAULT current_timestamp(),

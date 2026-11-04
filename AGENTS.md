@@ -37,9 +37,27 @@ uploads/       - Receipt files (finance module)
 - AuthController is the exception: renders views directly without layout wrapper
 - Department-based access control checked in controller constructors
 
+## Roles (warehouse + QC)
+- `users.role` (VARCHAR 30, nullable) — sub-role within department; NULL for non-warehouse/QC users or unassigned
+- Warehouse roles: `whse_admin` (all + MRP approval auto-approver), `whse_officer` (DRs, receiving, items, logs, reports), `whse_ppic` (customer PO, LMR, MRP sheet, logs), `whse_procurement` (purchasing PO), `whse_receiving` (stock in/out, receiving view, items view)
+- QC roles: `qc_admin` (receiving + delivery inspection), `qc_inspector` (delivery inspection only)
+- `app/helpers/RoleHelper.php` is the single source of truth: action permission map, sidebar menus, role home URLs (`homeUrl()`, `warehouseCan()`, `qcCan()`, `warehouseMenu()`, `qcMenu()`)
+- Warehouse/QC controller constructors enforce `RoleHelper` checks; sidebar menus render from `RoleHelper` (warehouse layout uses `$sideMenu`, QC uses `qc/views/sidebar.php`)
+- Each role has its own landing dashboard (`warehouse/views/dashboards/{officer,ppic,procurement,receiving}.php`, `qc/views/dashboard/{admin,inspector}.php`); `whse_admin` keeps the original warehouse dashboard
+- Warehouse/QC users without a role land on `?controller=auth&action=noRole`
+- Roles are assigned via Admin → Users & Roles (`AdminController::updateUserRole`)
+- Admin module (`AdminController`) is now locked to `department = admin`; cross-module "unauthorized" redirects go to `RoleHelper::homeUrl()` instead of `?controller=admin`
+- `users.is_approver` is legacy — `WarehouseModel::isWarehouseApprover()` passes for `role = whse_admin` OR the old flag
+
+## Approval flows
+- MRP runs (2 gates): PPIC saves → WHSE Admin → System Admin → released to Procurement (`supplier_orders.status` `pending_whse_approval` → `pending_sysadmin_approval` → `requested`; stock reserved at the System Admin release). Zero-lacking runs: `mrp_runs.approval_status` `pending_whse_approval` → `pending_sysadmin_approval` → `approved`
+- QC Admin does NOT gate runs (old MRP Check page retired/blocked — `qc&action=mrpCheck` redirects); QC inspects raw material at **Receiving Inspection** before stock is added
+- PO drafts (manual cart + MRP group process + batch, all identical): `pending_whse_approval` (WHSE Admin) → `pending_admin_approval` (System Admin, Approvals hub) → `pending` (Active for receiving). `po_group_id` discriminates processed PO drafts (set) from born MRP requisition rows awaiting the run's own WHSE gate (NULL)
+- MRP / Purchasing PO separation is enforced in `WarehouseModel`: run gates (`getMrpApprovalRuns`, `decideMrpRun`, `approve/rejectMrpRequisition`) act only on rows with `po_group_id IS NULL` — processed PO drafts can never re-enter an MRP approval queue or be run-approved (a past leak double-approved run #35)
+
 ## Database
 - DB: `manufacturing_mgmt`, user: `root`, no password
-- Schema: `sql/schema.sql` — generated dump of the live DB (32 tables + 3 views), do not hand-edit; regenerate per the command in its file header
+- Schema: `sql/schema.sql` — generated dump of the live DB (33 tables + 3 views), do not hand-edit; regenerate per the command in its file header
 - Migrations: `sql/applied/` (done) + `sql/pending/` (run with `sql/run_pending.php` or idempotent `sql/pending/deploy_current.php`; tracked in `schema_migrations`)
 - Install admin: `php install-admin.php` (creates admin/admin user)
 - Key tables: users, customers, items, inventory_balances, purchase_orders, purchase_order_items, deliveries, supplier_orders, mrp_runs, mrp_run_items, delivery_receipts, production_history

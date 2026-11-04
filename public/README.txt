@@ -32,3 +32,9 @@ public/
     └── bootstrap-icons/
         ├── bootstrap-icons.woff
         └── bootstrap-icons.woff2
+3. SWEETALERT2 11.x (CSS & JS) - bundled, works offline:
+   - Already included:
+        - public/css/sweetalert2.min.css
+        - public/js/sweetalert2.min.js
+   - Official source if you need to update:
+        https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/

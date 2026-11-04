@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -6,6 +6,9 @@
     <title><?= $page_title ?? 'Finance Dashboard' ?></title>
     <link href="public/css/bootstrap.min.css" rel="stylesheet">
     <link href="public/css/bootstrap-icons.min.css" rel="stylesheet">
+    <link href="public/css/sweetalert2.min.css" rel="stylesheet">
+    <script src="public/js/sweetalert2.min.js"></script>
+    <script src="public/js/dialogs.js"></script>
     <link href="public/css/style.css" rel="stylesheet">
     <style>
         :root {

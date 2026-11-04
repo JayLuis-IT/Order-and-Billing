@@ -62,7 +62,7 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
         <form method="POST" action="?controller=warehouse&action=saveMrpSnapshot" class="d-inline" id="saveMrpForm">
             <input type="hidden" name="po_id" value="<?= $selectedPO ?>">
             <input type="hidden" name="customer_id" value="<?= $selectedCustomer ?>">
-            <button type="submit" class="btn btn-success" id="saveMrpBtn" onclick="return confirm('Save current MRP as snapshot?')">
+            <button type="submit" class="btn btn-success" id="saveMrpBtn" data-confirm="Save current MRP as snapshot?">
                 <i class="bi bi-save me-1"></i>Save Snapshot
             </button>
         </form>
@@ -78,6 +78,11 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
         <a href="?controller=warehouse&action=mrpHistory" class="btn btn-outline-secondary">
             <i class="bi bi-clock-history me-1"></i>History
         </a>
+        <?php if ($showSaveBtn): ?>
+        <button type="button" class="btn btn-outline-dark" id="btnPrintMrpSheet" title="Print this MRP sheet">
+            <i class="bi bi-printer me-1"></i>Print
+        </button>
+        <?php endif; ?>
         <?php if (!empty($poHeader)): ?>
         <a href="?controller=warehouse&action=mrpPDF&customer_id=<?= $selectedCustomer ?>&po_id=<?= $selectedPO ?>" class="btn btn-danger">
             <i class="bi bi-file-earmark-pdf me-1"></i>Print PDF
@@ -112,6 +117,9 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
                  select only and never bleeds into the Target Quantity field. -->
             <div class="col-xl-4 col-md-4">
                 <label class="form-label fw-bold">Select Finished Good / SFG</label>
+                <div id="bomCurrentIndicator" class="small text-muted mb-1 d-none">
+                    <i class="bi bi-check-circle-fill text-success me-1"></i>Current BOM: <code id="bomCurrentCode"></code>
+                </div>
                 <div class="input-group bom-switch-hidden" id="fgBomInputGroup">
                     <select name="fg_item_id" id="mrpFg" class="form-select filter-select" <?= empty($fgOptions) ? 'disabled' : '' ?>>
                         <?php if (empty($fgOptions)): ?>
@@ -154,9 +162,8 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
                 </button>
                 <?php if ($showSaveBtn): ?>
                 <button type="button" id="saveMrpCalculationBtn" class="btn btn-success w-100"
-                        data-lacking="<?= htmlspecialchars(json_encode($mrpLackingRows), ENT_QUOTES) ?>"
-                        <?= empty($mrpLackingRows) ? 'disabled title="Nothing lacking — no purchase requests needed"' : '' ?>>
-                    <i class="bi bi-cart-plus me-1"></i>Save &amp; Transfer Lacking to Purchasing PO
+                        data-lacking="<?= htmlspecialchars(json_encode($mrpLackingRows), ENT_QUOTES) ?>">
+                    <i class="bi bi-cart-plus me-1"></i>Save MRP Calculation
                 </button>
                 <?php endif; ?>
             </div>
@@ -239,7 +246,7 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
         <table class="table table-sm table-bordered mb-0 mrp-table">
             <thead>
                 <tr>
-                    <th>Component Code</th>
+                    <th>Item Code</th>
                     <th>Description</th>
                     <th>Category</th>
                     <th class="num">Required Qty</th>
@@ -281,7 +288,7 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
 </div>
 
 <!-- Signature Blocks -->
-<div class="card data-card no-print">
+<div class="card data-card">
     <div class="card-body">
         <div class="mrp-signature">
             <div class="sig-block">
@@ -289,11 +296,11 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
                 <div class="sig-role"><?= htmlspecialchars(ucfirst($_SESSION['department'] ?? '')) ?></div>
             </div>
             <div class="sig-block">
-                <div class="sig-line">Reviewed By: _______________</div>
+                <div class="sig-line">Reviewed By: Reymar Prieto</div>
                 <div class="sig-role">&nbsp;</div>
             </div>
             <div class="sig-block">
-                <div class="sig-line">Approved By: _______________</div>
+                <div class="sig-line">Approved By: Ferdinand Ginete</div>
                 <div class="sig-role">&nbsp;</div>
             </div>
         </div>
@@ -303,7 +310,7 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
 <?php endif; ?>
 <?php endif; ?>
 
-<!-- Custom MRP Reference prompt (Save & Transfer) -->
+<!-- Custom MRP Reference prompt (Save MRP Calculation) -->
 <div class="modal fade" id="mrpRefModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content">
@@ -312,7 +319,7 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
-                <p class="mb-2 text-muted" id="mrpRefModalSummary">Queue lacking material(s) as Purchase Requests for Procurement.</p>
+                <p class="mb-2 text-muted" id="mrpRefModalSummary">Save lacking material(s) as Draft Requisitions — released to Procurement only after Warehouse Admin AND System Admin approval.</p>
                 <label class="form-label fw-bold" for="mrpRefInput">MRP Reference Number (auto-generated):</label>
                 <input type="text" class="form-control" id="mrpRefInput" maxlength="30"
                        placeholder="MRP#<?= date('Y') ?>-0001" autocomplete="off" spellcheck="false" readonly>
@@ -322,7 +329,7 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-success" id="mrpRefConfirmBtn">
-                    <i class="bi bi-cart-plus me-1"></i>Save &amp; Transfer
+                    <i class="bi bi-cart-plus me-1"></i>Save Draft Requisitions
                 </button>
             </div>
         </div>
@@ -370,7 +377,7 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
                         <table class="table table-sm table-bordered mb-0 align-middle">
                             <thead class="table-light">
                                 <tr>
-                                    <th>Component Code</th>
+                                    <th>Item Code</th>
                                     <th>Description</th>
                                     <th>Category</th>
                                     <th>Phase</th>
@@ -420,7 +427,7 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
         window.refreshSearchableDropdown(customer);
     }
 
-    // Save & Transfer Lacking → preview the next auto-generated MRP reference
+    // Save MRP Calculation → preview the next auto-generated MRP reference
     // (MRP#YYYY-XXXX), then build a POST form (cannot nest inside the GET form).
     // The reference shown here is only a preview: the save endpoint regenerates
     // the sequence server-side inside its transaction, so the stored number is
@@ -438,7 +445,7 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
         // Excel-style netting on every keystroke of the ALLOCATED input:
         //   available = max(0, SOH - edited allocated)
         //   lacking   = max(0, Required - available)
-        // The Save & Transfer button's data-lacking payload is rebuilt from the
+        // The Save MRP Calculation button's data-lacking payload is rebuilt from the
         // live cells, so the transfer follows the planner's overrides. Vanilla
         // JS — the project ships no jQuery.
         var fmtQty = function (n) {
@@ -506,13 +513,8 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
                 return { component_item_id: r.component_item_id, lacking_qty: r.lacking_qty };
             });
             saveBtn.setAttribute('data-lacking', JSON.stringify(lackingRows));
-            if (saveBtn.dataset.saving) return;   // mid-submit: keep it locked
-            saveBtn.disabled = lackingRows.length === 0;
-            if (lackingRows.length) {
-                saveBtn.removeAttribute('title');
-            } else {
-                saveBtn.setAttribute('title', 'Nothing lacking — no purchase requests needed');
-            }
+            // Saving is allowed even with zero lackings (pure planning snapshot:
+            // the run lands in MRP History, no purchase requests are queued).
         };
 
         var onAllocatedInput = function (e) {
@@ -571,14 +573,14 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
         };
 
         saveBtn.addEventListener('click', function () {
-            if (saveBtn.disabled) return;   // debounce: ignore any further clicks
+            if (saveBtn.dataset.saving) return;   // debounce: ignore further clicks
             var rows = [];
             try { rows = JSON.parse(saveBtn.getAttribute('data-lacking') || '[]'); } catch (e) {}
-            if (!rows.length) return;
 
             pendingRows = rows;
-            document.getElementById('mrpRefModalSummary').textContent =
-                'Queue ' + rows.length + ' lacking material(s) as Purchase Requests for Procurement?';
+            document.getElementById('mrpRefModalSummary').textContent = rows.length
+                ? 'Save ' + rows.length + ' lacking material(s) as Draft Requisitions — they land in MRP History as For Approval and reach Purchasing PO only after WHSE + System Admin approval.'
+                : 'Save this MRP calculation to MRP History — no lacking items, so no purchase requests will be created.';
             clearRefError();
             refModal.show();
             loadNextMrpRef();
@@ -598,13 +600,12 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
                 refInput.focus();
                 return;                       // abort
             }
-            if (!pendingRows.length) { refModal.hide(); return; }
 
             // Commit: lock the button so a double click cannot submit twice,
             // then close the prompt and submit the form.
             saveBtn.disabled = true;
             saveBtn.dataset.saving = '1';
-            saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Transferring...';
+            saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
             refModal.hide();
 
             var form = document.createElement('form');
@@ -642,6 +643,12 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
         });
         refInput.addEventListener('input', clearRefError);
         refModalEl.addEventListener('hidden.bs.modal', resetRefPrompt);
+
+        // ─── Print (browser print of the on-screen sheet) ────────────────────
+        var printBtn = document.getElementById('btnPrintMrpSheet');
+        if (printBtn) {
+            printBtn.addEventListener('click', function () { window.print(); });
+        }
     });
 })();
 </script>
@@ -719,6 +726,25 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
             return boms.length ? boms[0].bom_id : 0;
         };
 
+        // Persistent on-page indicator: shows the BOM code Calculate will use,
+        // so the active formulation is visible without opening the modal.
+        var currentInd = document.getElementById('bomCurrentIndicator');
+        var currentCodeEl = document.getElementById('bomCurrentCode');
+        var updateCurrentBomLabel = function () {
+            if (!currentInd || !currentCodeEl) return;
+            var inUse = effectiveBomId();
+            var match = null;
+            boms.forEach(function (bom) {
+                if (parseInt(bom.bom_id, 10) === inUse) match = bom;
+            });
+            if (match) {
+                currentCodeEl.textContent = match.bom_code;
+                currentInd.classList.remove('d-none');
+            } else {
+                currentInd.classList.add('d-none');
+            }
+        };
+
         var renderBomList = function () {
             var tbody = document.getElementById('bomListRows');
             if (!tbody) return;
@@ -735,7 +761,7 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
                 var status = isDefault
                     ? '<span class="badge bg-success">Default</span>'
                     : '<span class="badge bg-secondary">Alternative</span>';
-                if (isInUse) status += ' <span class="badge bg-info text-dark">In Use</span>';
+                if (isInUse) status += ' <span class="badge bg-primary">Active Selection</span>';
 
                 var variant = [];
                 if (bom.fg_name) variant.push(bom.fg_name);
@@ -745,7 +771,7 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
                 }
                 if (bom.created_at) variant.push('Created ' + formatDate(bom.created_at));
 
-                html += '<tr>';
+                html += '<tr' + (isInUse ? ' class="table-active"' : '') + '>';
                 html += '<td><code>' + escapeHtml(bom.bom_code) + '</code></td>';
                 html += '<td>' + escapeHtml(variant.join(' · ')) + '</td>';
                 html += '<td>' + status + '</td>';
@@ -753,7 +779,7 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
                 html += '<button type="button" class="btn btn-sm btn-info btn-preview-bom" data-bom="' +
                     escapeHtml(bom.bom_id) + '" title="View components"><i class="bi bi-eye"></i> View</button> ';
                 if (isInUse) {
-                    html += '<button type="button" class="btn btn-sm btn-outline-success" disabled>In Use</button>';
+                    html += '<button type="button" class="btn btn-sm btn-outline-secondary" disabled>Currently Selected</button>';
                 } else {
                     html += '<button type="button" class="btn btn-sm btn-success btn-use-bom" data-bom="' +
                         escapeHtml(bom.bom_id) + '">Use This BOM</button>';
@@ -762,6 +788,7 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
                 html += '</tr>';
             });
             tbody.innerHTML = html;
+            updateCurrentBomLabel();
         };
 
         var loadBomList = function () {
@@ -776,6 +803,7 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
                 boms = [];
                 hideSwitchButton();
                 renderBomList();
+                updateCurrentBomLabel();
                 return;
             }
 
@@ -793,14 +821,17 @@ $showSaveBtn = !empty($didCalculate) && !empty($mrpSection) && !empty($mrpSectio
                     if (!res.success) {
                         boms = [];
                         hideSwitchButton();
+                        updateCurrentBomLabel();
                         return;
                     }
                     boms = res.boms || [];
                     updateBomSwitchButton(boms);
+                    updateCurrentBomLabel();
                 })
                 .catch(function () {
                     boms = [];
                     hideSwitchButton();
+                    updateCurrentBomLabel();
                 });
         };
 

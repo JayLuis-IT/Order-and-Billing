@@ -4,6 +4,7 @@ namespace App\Controllers;
 use App\Models\LmrModel;
 use App\Models\CatalogModel;
 use App\Models\AuditModel;
+use App\Helpers\RoleHelper;
 
 class LmrController {
     private $lmrModel;
@@ -19,8 +20,21 @@ class LmrController {
         $dept = $_SESSION['department'] ?? '';
         if (!in_array($dept, $allowedDepartments)) {
             $_SESSION['error'] = 'You do not have access to LMRs.';
-            header('Location: ?controller=' . ($dept === 'finance' ? 'finance' : 'admin'));
+            header('Location: ' . RoleHelper::homeUrl());
             exit;
+        }
+        // Role gate: only whse_admin / whse_ppic may use the LMR module.
+        if ($dept === 'warehouse') {
+            $role = RoleHelper::currentRole();
+            if ($role === null) {
+                header('Location: ?controller=auth&action=noRole');
+                exit;
+            }
+            if (!RoleHelper::lmrCan($role)) {
+                $_SESSION['error'] = 'You do not have access to LMRs.';
+                header('Location: ' . RoleHelper::homeUrl());
+                exit;
+            }
         }
 
         $this->lmrModel = new LmrModel();
@@ -162,8 +176,27 @@ class LmrController {
             exit;
         }
 
+        $allocs = $this->parseLotAllocations();
+        if (!empty($allocs)) {
+            $fgItemId = intval($this->lmrModel->getItemIdByBomCode($header['bom_code'] ?? ''));
+            $allocError = $this->validateLotAllocations($allocs, $header, $fgItemId);
+            if ($allocError !== null) {
+                if ($isAjax) {
+                    header('Content-Type: application/json');
+                    echo json_encode(['success' => false, 'error' => $allocError]);
+                    exit;
+                }
+                $_SESSION['error'] = $allocError;
+                header('Location: ?controller=lmr&action=create');
+                exit;
+            }
+        }
+
         try {
-            $this->lmrModel->create($header, $items);
+            $lmrId = $this->lmrModel->create($header, $items);
+            if (!empty($allocs)) {
+                $this->lmrModel->saveLotAllocations($lmrId, $this->linkLotAllocationsToItemRows($lmrId, $allocs));
+            }
             if ($isAjax) {
                 header('Content-Type: application/json');
                 echo json_encode(['success' => true, 'redirect' => '?controller=lmr&action=index']);
@@ -320,8 +353,30 @@ class LmrController {
             exit;
         }
 
+        $allocs = $this->parseLotAllocations();
+        if (!empty($allocs)) {
+            $fgItemId = intval($this->lmrModel->getItemIdByBomCode($header['bom_code'] ?? ''));
+            $allocError = $this->validateLotAllocations($allocs, $header, $fgItemId);
+            if ($allocError !== null) {
+                if ($isAjax) {
+                    header('Content-Type: application/json');
+                    echo json_encode(['success' => false, 'error' => $allocError]);
+                    exit;
+                }
+                $_SESSION['error'] = $allocError;
+                header('Location: ?controller=lmr&action=edit&id=' . $lmrId);
+                exit;
+            }
+        }
+
         try {
             $this->lmrModel->update($lmrId, $header, $items);
+            if (!empty($allocs)) {
+                $this->lmrModel->saveLotAllocations($lmrId, $this->linkLotAllocationsToItemRows($lmrId, $allocs));
+            } else {
+                // Cleared / no lots selected on save → drop previous selections
+                $this->lmrModel->saveLotAllocations($lmrId, []);
+            }
             if ($isAjax) {
                 header('Content-Type: application/json');
                 echo json_encode(['success' => true, 'redirect' => '?controller=lmr&action=index']);
@@ -359,6 +414,7 @@ class LmrController {
             'customers' => $this->catalogModel->getCustomers(),
             'allItems' => $this->catalogModel->getLmrProductItems(),
             'boms' => $this->lmrModel->getActiveBoms(),
+            'lot_allocations' => $this->lmrModel->getLotAllocations($id),
         ];
 
         $this->render('lmr_entry', $data);
@@ -625,6 +681,143 @@ class LmrController {
         $this->render('lmr/view', $data);
     }
 
+    /**
+     * JSON: FIFO-sorted available lots for one component item.
+     * GET ?controller=lmr&action=getLotStock&item_id=&lmr_id=
+     */
+    public function getLotStock() {
+        header('Content-Type: application/json');
+        $itemId = intval($_GET['item_id'] ?? 0);
+        $lmrId = intval($_GET['lmr_id'] ?? 0);
+        if ($itemId <= 0) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Invalid item ID']);
+            exit;
+        }
+        try {
+            $lots = $this->lmrModel->getAvailableLotsForItem($itemId, $lmrId);
+            $existing = [];
+            if ($lmrId > 0) {
+                foreach ($this->lmrModel->getLotAllocations($lmrId) as $a) {
+                    if (intval($a['item_id']) === $itemId) {
+                        $existing[] = [
+                            'lot_number' => $a['lot_number'],
+                            'allocated_qty' => floatval($a['allocated_qty']),
+                        ];
+                    }
+                }
+            }
+            echo json_encode([
+                'item_id' => $itemId,
+                'lots' => $lots,
+                'existing' => $existing,
+            ]);
+        } catch (\Exception $e) {
+            error_log('getLotStock error: ' . $e->getMessage());
+            http_response_code(500);
+            echo json_encode(['error' => 'Failed to load lots']);
+        }
+        exit;
+    }
+
+    /**
+     * Validate operator-entered lot allocations against the BOM quantities
+     * of the header formulation. Returns an error string or null.
+     * Empty / no allocations → allocation is optional and passes.
+     */
+    private function validateLotAllocations(array $allocs, array $header, int $fgItemId) {
+        $qty = (float) ($header['qty_ordered'] ?? 0);
+        if ($qty <= 0 || $fgItemId <= 0) {
+            return 'Qty Ordered / formulation is required before allocating lots.';
+        }
+        // Group allocations per component item
+        $byItem = [];
+        foreach ($allocs as $a) {
+            $itemId = intval($a['item_id'] ?? 0);
+            $lot = trim((string) ($a['lot_number'] ?? ''));
+            $q = floatval($a['allocated_qty'] ?? 0);
+            if ($itemId <= 0 || $lot === '') {
+                return 'Each lot allocation needs a valid lot number.';
+            }
+            if ($q <= 0) {
+                return 'Lot allocation quantities must be greater than zero.';
+            }
+            $byItem[$itemId][] = $q;
+        }
+        if (empty($byItem)) {
+            return null;
+        }
+
+        $breakdown = $this->lmrModel->getBomBreakdownForItem($fgItemId, $qty);
+        $requiredMap = [];
+        foreach (($breakdown['components'] ?? []) as $c) {
+            $cid = intval($c['component_item_id'] ?? 0);
+            if ($cid > 0) {
+                $requiredMap[$cid] = round((float) $c['required_qty'], 4);
+            }
+        }
+
+        foreach ($byItem as $itemId => $sums) {
+            $allocated = round(array_sum($sums), 4);
+            if (!isset($requiredMap[$itemId])) {
+                return 'Allocated item is not a component of formulation "' . $header['bom_code'] . '".';
+            }
+            if ($allocated > $requiredMap[$itemId] + 1e-6) {
+                return 'Allocated quantity (' . $allocated . ') exceeds the required quantity (' . $requiredMap[$itemId] . ').';
+            }
+            if ($allocated < $requiredMap[$itemId] - 1e-6) {
+                return 'Allocated quantity (' . $allocated . ') does not match the required quantity (' . $requiredMap[$itemId] . ').';
+            }
+            // Ensure the lots still exist / have enough balance
+            $lots = $this->lmrModel->getAvailableLotsForItem($itemId);
+            $availMap = [];
+            foreach ($lots as $l) {
+                $availMap[$l['lot_number']] = floatval($l['available_qty']);
+            }
+            $perLot = [];
+            foreach ($byItem[$itemId] as $idx => $q) {
+                $lot = trim((string) $allocs[$idx]['lot_number']);
+                $perLot[$lot] = ($perLot[$lot] ?? 0) + $q;
+            }
+            foreach ($perLot as $lot => $q) {
+                if (!isset($availMap[$lot])) {
+                    return 'Lot "' . $lot . '" is no longer available for allocation.';
+                }
+                if ($q > $availMap[$lot] + 1e-6) {
+                    return 'Requested ' . $q . ' from lot "' . $lot . '" exceeds its available ' . $availMap[$lot] . '.';
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Apply posted lot_allocations_json against a saved LMR.
+     */
+    private function parseLotAllocations() {
+        $raw = $_POST['lot_allocations_json'] ?? '';
+        $allocs = json_decode($raw, true);
+        if (is_array($allocs)) {
+            return array_values(array_filter($allocs, function ($a) {
+                return is_array($a) && floatval($a['allocated_qty'] ?? 0) > 0
+                    && trim((string) ($a['lot_number'] ?? '')) !== '' && intval($a['item_id'] ?? 0) > 0;
+            }));
+        }
+        return [];
+    }
+
+    private function linkLotAllocationsToItemRows($lmrId, array $allocs) {
+        $items = $this->lmrModel->getItemsByLmrId($lmrId);
+        $lriByItem = [];
+        foreach ($items as $item) {
+            $lriByItem[intval($item['item_id'])] = intval($item['lri_id']);
+        }
+        foreach ($allocs as &$alloc) {
+            $alloc['lri_id'] = $lriByItem[intval($alloc['item_id'])] ?? null;
+        }
+        return $allocs;
+    }
+
     private function validateHeaderBom(array $header) {
         $qty = (float) ($header['qty_ordered'] ?? 0);
         if ($qty <= 0) {
@@ -655,6 +848,12 @@ class LmrController {
     }
 
     private function render($view, $data = []) {
+        if (($_SESSION['department'] ?? '') === 'warehouse') {
+            $role = RoleHelper::currentRole();
+            $data['role'] = $role;
+            $data['roleLabel'] = RoleHelper::label($role);
+            $data['sideMenu'] = RoleHelper::warehouseMenu($role);
+        }
         extract($data);
         ob_start();
         include __DIR__ . "/../views/{$view}.php";

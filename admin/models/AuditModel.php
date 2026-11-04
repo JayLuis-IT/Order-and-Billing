@@ -90,6 +90,27 @@ class AuditModel extends BaseModel {
         ];
     }
 
+    /**
+     * Recent APPROVE / REJECT decisions recorded in the audit log — the
+     * persistent decision history for the admin Approvals hub (MRP runs,
+     * PO drafts, over-receipts … every approve-type entry is retained).
+     */
+    public function getRecentApprovalHistory($department = 'admin', $limit = 25, $excludeTargetType = null) {
+        $sql = "SELECT al.action, al.module, al.description, al.username, al.department,
+                       al.created_at, al.target_type, al.target_id, al.old_values, al.new_values
+                FROM audit_logs al
+                WHERE al.department = :department AND al.action IN ('APPROVE', 'REJECT')"
+                . ($excludeTargetType !== null ? " AND al.target_type <> '" . str_replace("'", '', $excludeTargetType) . "'" : '') .
+                "
+                ORDER BY al.created_at DESC
+                LIMIT :limit";
+        $stmt = self::getConnection()->prepare($sql);
+        $stmt->bindValue(':department', $department, PDO::PARAM_STR);
+        $stmt->bindValue(':limit', (int) $limit, PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetchAll();
+    }
+
     public static function getLogStats($department = null) {
         $conn = self::getConnection();
 
@@ -112,5 +133,68 @@ class AuditModel extends BaseModel {
         $sql = "SELECT user_id, username, full_name, department FROM users WHERE status = 1 AND `remove` = 0 ORDER BY username ASC";
         $stmt = self::getConnection()->query($sql);
         return $stmt->fetchAll();
+    }
+
+    /** Full user list incl. role + approver flag + login status (admin "Users" screen). */
+    public function getAllUsersWithApprover() {
+        $sql = "SELECT user_id, username, full_name, department, role, status, is_approver
+                FROM users WHERE `remove` = 0 ORDER BY username ASC";
+        $stmt = self::getConnection()->query($sql);
+        return $stmt->fetchAll();
+    }
+
+    /** Set a user's role (warehouse/qc sub-roles). Returns fresh row or null. */
+    public function setUserRole($userId, $role) {
+        $conn = self::getConnection();
+        $conn->beginTransaction();
+        try {
+            $stmt = $conn->prepare("SELECT username, department, role FROM users WHERE user_id = :id AND `remove` = 0 FOR UPDATE");
+            $stmt->execute(['id' => $userId]);
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$user) {
+                $conn->rollBack();
+                return null;
+            }
+            $conn->prepare("UPDATE users SET role = :role WHERE user_id = :id")
+                ->execute(['role' => $role !== '' ? $role : null, 'id' => $userId]);
+            $conn->commit();
+            return ['username' => $user['username'], 'department' => $user['department'],
+                    'old_role' => $user['role'], 'role' => $role !== '' ? $role : null];
+        } catch (\Exception $e) {
+            $conn->rollBack();
+            throw $e;
+        }
+    }
+
+    /**
+     * Toggle users.is_approver (MRP Warehouse Admin approval, step 1).
+     * Granting force-rewrites the department to 'warehouse' (the gate wraps
+     * both the flag and the department); revoking only clears the flag.
+     * Returns the fresh [is_approver, department] pair, or null when unknown.
+     */
+    public function setApproverFlag($userId, $grant) {
+        $conn = self::getConnection();
+        $conn->beginTransaction();
+        try {
+            $stmt = $conn->prepare("SELECT username, department FROM users WHERE user_id = :id AND `remove` = 0 FOR UPDATE");
+            $stmt->execute(['id' => $userId]);
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$user) {
+                $conn->rollBack();
+                return null;
+            }
+            if ($grant) {
+                $conn->prepare("UPDATE users SET is_approver = 1, department = 'warehouse' WHERE user_id = :id")
+                    ->execute(['id' => $userId]);
+            } else {
+                $conn->prepare("UPDATE users SET is_approver = 0 WHERE user_id = :id")
+                    ->execute(['id' => $userId]);
+            }
+            $conn->commit();
+            return ['username' => $user['username'], 'department' => $user['department'], 'is_approver' => $grant ? 1 : 0];
+        } catch (\Exception $e) {
+            $conn->rollBack();
+            throw $e;
+        }
     }
 }

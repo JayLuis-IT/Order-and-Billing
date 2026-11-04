@@ -119,10 +119,19 @@ class QcModel extends BaseModel {
                     ri.remarks,
                     ri.qc_status,
                     ri.supplier_order_id,
-                    i.item_id
+                    so.mrp_ref,
+                    i.item_id,
+                    car.report_id AS latest_report_id,
+                    car.disposition AS latest_disposition
                 FROM receiving_items ri
                 LEFT JOIN items i ON ri.item_code = i.item_code
-                WHERE ri.qc_status = 'PENDING_QC'
+                LEFT JOIN supplier_orders so ON so.supplier_order_id = ri.supplier_order_id
+                LEFT JOIN qc_analysis_reports car ON car.report_id = (
+                    SELECT car2.report_id FROM qc_analysis_reports car2
+                    WHERE car2.receiving_item_id = ri.id
+                    ORDER BY car2.date_inspected DESC, car2.report_id DESC LIMIT 1
+                )
+                WHERE ri.qc_status IN ('PENDING_QC', 'HOLD')
                 ORDER BY ri.received_date ASC, ri.id ASC";
         $stmt = self::getConnection()->prepare($sql);
         $stmt->execute();
@@ -148,9 +157,18 @@ class QcModel extends BaseModel {
                     ri.remarks,
                     ri.qc_status,
                     ri.supplier_order_id,
-                    i.item_id
+                    so.mrp_ref,
+                    i.item_id,
+                    car.report_id AS latest_report_id,
+                    car.disposition AS latest_disposition
                 FROM receiving_items ri
                 LEFT JOIN items i ON ri.item_code = i.item_code
+                LEFT JOIN supplier_orders so ON so.supplier_order_id = ri.supplier_order_id
+                LEFT JOIN qc_analysis_reports car ON car.report_id = (
+                    SELECT car2.report_id FROM qc_analysis_reports car2
+                    WHERE car2.receiving_item_id = ri.id
+                    ORDER BY car2.date_inspected DESC, car2.report_id DESC LIMIT 1
+                )
                 WHERE ri.qc_status IN ('PASSED', 'REJECTED')
                 ORDER BY ri.inspected_at DESC, ri.id DESC";
         $stmt = self::getConnection()->prepare($sql);
@@ -360,6 +378,35 @@ class QcModel extends BaseModel {
         return (int) self::getConnection()->lastInsertId();
     }
 
+    /**
+     * STRUCTURAL PLACEHOLDER — custom checklist-based QC evaluation.
+     *
+     * Upcoming iterations will attach item-checklist driven scoring to each
+     * decision. The contract is fixed today so callers/UI can plug in later:
+     *   $answers   — one entry per checklist item: [key => ['value' => text, 'pass' => bool]]
+     *   $template  — the checklist definition for the item (null until steps ship).
+     *
+     * Until the checklist engine lands, recordQcInspection() runs WITHOUT
+     * checklist validation: this hook returns null (no failure, no data saved)
+     * and the PASSED/REJECTED decision flows exactly as it does today. The QC
+     * inspection view already reserves a hidden #qcChecklistPanel container,
+     * so the future checklist UI mounts without touching the decision flow.
+     *
+     * @param int   $receivingItemId receiving_items.id the evaluation attaches to
+     * @param array $answers         per-checklist-item answers (future input)
+     * @param array|null $template    checklist definition (future input)
+     * @return array|null ['checklist_passed' => bool, 'violations' => array] | null when no checklist applies
+     */
+    public function evaluateChecklist($receivingItemId, array $answers = [], ?array $template = null) {
+        if ($template === null || $template === []) {
+            return null;
+        }
+        return [
+            'checklist_passed' => false,
+            'violations' => [],
+        ];
+    }
+
     public function recordQcInspection($data) {
         $receivingItemId = (int) ($data['receiving_item_id'] ?? 0);
         $decision = strtoupper((string) ($data['decision'] ?? ''));
@@ -391,14 +438,22 @@ class QcModel extends BaseModel {
             throw new \RuntimeException('Inspector name is required.');
         }
 
+        // Checklist evaluation hook (structural placeholder): a no-op until the
+        // custom checklist engine lands — result ignored, decisions unchanged.
+        $checklistResult = $this->evaluateChecklist(
+            $receivingItemId,
+            (array) ($data['checklist_answers'] ?? [])
+        );
+
         $receivingItem = $this->getReceivingItemById($receivingItemId);
         if (!$receivingItem) {
             throw new \RuntimeException('Receiving item was not found.');
         }
         // Server-side duplicate guard: a queue entry can only be inspected once
-        // (blocks double-clicked Approve/Reject submits).
+        // (blocks double-clicked Approve/Reject submits). HOLD items may be
+        // re-inspected — that is the point of putting them on hold.
         $currentQcStatus = strtoupper((string) ($receivingItem['qc_status'] ?? ''));
-        if ($currentQcStatus !== 'PENDING_QC') {
+        if (!in_array($currentQcStatus, ['PENDING_QC', 'HOLD'], true)) {
             throw new \RuntimeException('This receiving item has already been inspected (status: ' . $currentQcStatus . ').');
         }
         $itemId = (int) ($receivingItem['item_id'] ?? 0);
@@ -544,5 +599,154 @@ class QcModel extends BaseModel {
         ];
 
         return $this->recordQcInspection($payload);
+    }
+
+    // ─── Raw Material Analysis Report (shared: MRP Check + Receiving) ─────────
+
+    /**
+     * Save one analysis report row. Exactly one target must be set:
+     *   MRP context     — run_id + component_item_id
+     *   Receiving context — receiving_item_id
+     * Multiple reports per target are allowed (retests); latest wins for gates.
+     */
+    public function saveAnalysisReport(array $data) {
+        $isMrp = !empty($data['run_id']) && !empty($data['component_item_id']);
+        $isReceiving = !empty($data['receiving_item_id']);
+        if ($isMrp === $isReceiving) {
+            throw new \RuntimeException('Inspection target is invalid.');
+        }
+        $rmName = trim((string) ($data['rm_name'] ?? ''));
+        if ($rmName === '') {
+            throw new \RuntimeException('RM Name is required.');
+        }
+        $disposition = strtoupper(trim((string) ($data['disposition'] ?? '')));
+        if (!in_array($disposition, ['APPROVED', 'REJECTED', 'HOLD', 'WAIVED'], true)) {
+            throw new \RuntimeException('Disposition must be Approved, Rejected, Hold, or Waived.');
+        }
+        $deliveryType = trim((string) ($data['delivery_type'] ?? 'new_delivery'));
+        if (!in_array($deliveryType, ['new_delivery', 'retest_1', 'retest_2', 'retest_3'], true)) {
+            $deliveryType = 'new_delivery';
+        }
+
+        $params = [
+            'run_id' => $isMrp ? (int) $data['run_id'] : null,
+            'component_item_id' => $isMrp ? (int) $data['component_item_id'] : null,
+            'receiving_item_id' => $isReceiving ? (int) $data['receiving_item_id'] : null,
+            'rm_name' => $rmName,
+            'supplier_name' => trim((string) ($data['supplier_name'] ?? '')) ?: null,
+            'rr_number' => trim((string) ($data['rr_number'] ?? '')) ?: null,
+            'lot_number' => trim((string) ($data['lot_number'] ?? '')) ?: null,
+            'old_expiry_date' => $this->nullableDate($data['old_expiry_date'] ?? null),
+            'date_delivered' => $this->nullableDate($data['date_delivered'] ?? null),
+            'date_tested' => $this->nullableDate($data['date_tested'] ?? null) ?: date('Y-m-d'),
+            'expiry_date' => $this->nullableDate($data['expiry_date'] ?? null),
+            'delivery_type' => $deliveryType,
+            'disposition' => $disposition,
+            'remarks' => trim((string) ($data['remarks'] ?? '')) ?: null,
+            'inspected_by' => (int) ($_SESSION['user_id'] ?? 0) ?: null,
+        ];
+        foreach (['appearance', 'color', 'odor', 'texture', 'ph', 'viscosity', 'sg', 'solubility', 'alcohol', 'microbial'] as $param) {
+            $params[$param . '_spec'] = trim((string) ($data[$param . '_spec'] ?? '')) ?: null;
+            $params[$param . '_result'] = trim((string) ($data[$param . '_result'] ?? '')) ?: null;
+        }
+
+        $columns = array_keys($params);
+        $sql = 'INSERT INTO qc_analysis_reports (' . implode(', ', $columns) . ')
+                VALUES (' . implode(', ', array_map(function ($c) {
+                    return ':' . $c;
+                }, $columns)) . ')';
+        $stmt = self::getConnection()->prepare($sql);
+        $stmt->execute($params);
+        return (int) self::getConnection()->lastInsertId();
+    }
+
+    private function nullableDate($value) {
+        $value = trim((string) $value);
+        if ($value === '' || $value === '0000-00-00') {
+            return null;
+        }
+        $ts = strtotime($value);
+        return $ts ? date('Y-m-d', $ts) : null;
+    }
+
+    /** Full report row by id (for the printable page). */
+    public function getAnalysisReport($reportId) {
+        $stmt = self::getConnection()->prepare(
+            "SELECT car.*, u.full_name AS inspector_name
+             FROM qc_analysis_reports car
+             LEFT JOIN users u ON u.user_id = car.inspected_by
+             WHERE car.report_id = :id"
+        );
+        $stmt->execute(['id' => (int) $reportId]);
+        return $stmt->fetch() ?: false;
+    }
+
+    /** Latest report per component item of an MRP run (for the items modal). */
+    public function getLatestMrpReports($runId) {
+        $stmt = self::getConnection()->prepare(
+            "SELECT car.* FROM qc_analysis_reports car
+             WHERE car.run_id = :run_id
+               AND car.report_id = (
+                   SELECT car2.report_id FROM qc_analysis_reports car2
+                   WHERE car2.run_id = car.run_id AND car2.component_item_id = car.component_item_id
+                   ORDER BY car2.date_inspected DESC, car2.report_id DESC LIMIT 1
+               )"
+        );
+        $stmt->execute(['run_id' => (int) $runId]);
+        $byItem = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $byItem[(int) $row['component_item_id']] = $row;
+        }
+        return $byItem;
+    }
+
+    /** Latest report for one receiving item (prefill + record tables). */
+    public function getLatestReceivingReport($receivingItemId) {
+        $stmt = self::getConnection()->prepare(
+            "SELECT car.* FROM qc_analysis_reports car
+             WHERE car.receiving_item_id = :id
+             ORDER BY car.date_inspected DESC, car.report_id DESC LIMIT 1"
+        );
+        $stmt->execute(['id' => (int) $receivingItemId]);
+        return $stmt->fetch() ?: false;
+    }
+
+    /**
+     * Apply a receiving-item disposition alongside its analysis report:
+     *   APPROVED / WAIVED → PASSED (release to SOH, waive = accept without full test)
+     *   REJECTED          → REJECTED (exclude from SOH)
+     *   HOLD              → HOLD (stays in the queue for re-inspection)
+     */
+    public function applyReceivingDisposition($receivingItemId, $disposition, $remarks = '') {
+        $item = $this->getReceivingItemById($receivingItemId);
+        if (!$item) {
+            throw new \RuntimeException('Receiving item not found.');
+        }
+        $currentStatus = strtoupper((string) ($item['qc_status'] ?? ''));
+        if (!in_array($currentStatus, ['PENDING_QC', 'HOLD'], true)) {
+            throw new \RuntimeException('This receiving item has already been inspected (status: ' . $currentStatus . ').');
+        }
+
+        if ($disposition === 'HOLD') {
+            self::getConnection()->prepare(
+                "UPDATE receiving_items SET qc_status = 'HOLD', remarks = :remarks WHERE id = :id"
+            )->execute([
+                'remarks' => $remarks !== '' ? $remarks : ($item['remarks'] ?? null),
+                'id' => (int) $receivingItemId,
+            ]);
+            return ['success' => true, 'decision' => 'HOLD'];
+        }
+
+        $receivedQty = (float) ($item['received_qty'] ?? 0);
+        $decision = ($disposition === 'REJECTED') ? 'REJECTED' : 'PASSED';
+        return $this->recordQcInspection([
+            'receiving_item_id' => (int) $receivingItemId,
+            'decision' => $decision,
+            'received_qty' => $receivedQty,
+            'passed_qty' => $decision === 'PASSED' ? $receivedQty : 0,
+            'rejected_qty' => $decision === 'REJECTED' ? $receivedQty : 0,
+            'inspector_name' => $_SESSION['full_name'] ?? 'QC',
+            'remarks' => $remarks,
+        ]);
     }
 }

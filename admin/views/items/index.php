@@ -48,8 +48,8 @@
                     <td><?= date('Y-m-d H:i', strtotime($item['last_update'])) ?></td>
                     <td>
                         <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#itemEditModal" data-id="<?= $item['item_id'] ?>" data-code="<?= htmlspecialchars($item['item_code']) ?>" data-desc="<?= htmlspecialchars($item['item_description']) ?>" data-uom="<?= $item['item_uom'] ?>" data-conversion="<?= $item['uom_conversion'] ?? '' ?>" data-customer="<?= $item['customer_id'] ?? '' ?>"><i class="bi bi-pencil"></i></button>
-                        <a href="?controller=admin&action=itemToggleStatus&id=<?= $item['item_id'] ?>&search=<?= urlencode($search ?? '') ?>&customer_id=<?= urlencode($customerFilter ?? '') ?>" class="btn btn-sm btn-warning" onclick="return confirm('Toggle item status?')"><i class="bi bi-toggle-on"></i></a>
-                        <a href="?controller=admin&action=itemDelete&id=<?= $item['item_id'] ?>&search=<?= urlencode($search ?? '') ?>&customer_id=<?= urlencode($customerFilter ?? '') ?>" class="btn btn-sm btn-danger" onclick="return confirm('Delete?')"><i class="bi bi-trash"></i></a>
+                        <a href="?controller=admin&action=itemToggleStatus&id=<?= $item['item_id'] ?>&search=<?= urlencode($search ?? '') ?>&customer_id=<?= urlencode($customerFilter ?? '') ?>" class="btn btn-sm btn-warning" data-confirm="Toggle item status?"><i class="bi bi-toggle-on"></i></a>
+                        <a href="?controller=admin&action=itemDelete&id=<?= $item['item_id'] ?>&search=<?= urlencode($search ?? '') ?>&customer_id=<?= urlencode($customerFilter ?? '') ?>" class="btn btn-sm btn-danger" data-confirm="Delete?"><i class="bi bi-trash"></i></a>
                     </td>
                 </tr>
                 <?php endforeach; ?>

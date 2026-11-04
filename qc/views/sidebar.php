@@ -1,14 +1,25 @@
+<?php
+// Role-driven menu: qc_admin sees both inspections; qc_inspector only delivery.
+if (empty($sideMenu)) {
+    $sideMenu = \App\Helpers\RoleHelper::qcMenu(\App\Helpers\RoleHelper::currentRole());
+}
+$currentQcAction = $_GET['action'] ?? '';
+$isActiveItem = function (array $item) use ($currentQcAction) {
+    if (strpos($item['href'], 'action=') === false) {
+        return $currentQcAction === '';
+    }
+    parse_str(parse_url($item['href'], PHP_URL_QUERY) ?? '', $q);
+    return ($q['action'] ?? '') === $currentQcAction;
+};
+?>
 <ul class="nav flex-column sidebar-menu">
+    <?php foreach ($sideMenu as $menuItem): ?>
     <li class="nav-item">
-        <a class="nav-link <?= (($page_title ?? '') === 'Receiving Inspection') ? 'active' : '' ?>" href="?controller=qc&action=receivingInspection">
-            <i class="bi bi-box-seam me-2"></i>Receiving Inspection
+        <a class="nav-link <?= $isActiveItem($menuItem) ? 'active' : '' ?>" href="<?= htmlspecialchars($menuItem['href']) ?>">
+            <i class="bi <?= htmlspecialchars($menuItem['icon']) ?> me-2"></i><?= htmlspecialchars($menuItem['label']) ?>
         </a>
     </li>
-    <li class="nav-item">
-        <a class="nav-link <?= (($page_title ?? '') === 'For Delivery Inspection') ? 'active' : '' ?>" href="?controller=qc&action=deliveryInspection">
-            <i class="bi bi-truck me-2"></i>For Delivery Inspection
-        </a>
-    </li>
+    <?php endforeach; ?>
     <li class="nav-item mt-auto">
         <a class="nav-link" href="?controller=auth&action=logout" style="color: #64748b; transition: all 0.2s;" onmouseover="this.style.color='#ef4444'" onmouseout="this.style.color='#64748b'">
             <i class="bi bi-box-arrow-left me-2"></i>Logout

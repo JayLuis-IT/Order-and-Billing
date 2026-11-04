@@ -110,10 +110,10 @@
                             <a href="?controller=warehouse&action=receiveSupplierOrder&id=<?= $o['supplier_order_id'] ?>" class="btn btn-outline-success" title="Receive">
                                 <i class="bi bi-box-arrow-in-down"></i>
                             </a>
-                            <a href="?controller=warehouse&action=cancelSupplierOrder&id=<?= $o['supplier_order_id'] ?>" class="btn btn-outline-warning" title="Cancel" onclick="return confirm('Cancel this order?')">
+                            <a href="?controller=warehouse&action=cancelSupplierOrder&id=<?= $o['supplier_order_id'] ?>" class="btn btn-outline-warning" title="Cancel" data-confirm="Cancel this order?">
                                 <i class="bi bi-x-circle"></i>
                             </a>
-                            <a href="?controller=warehouse&action=deleteSupplierOrder&id=<?= $o['supplier_order_id'] ?>" class="btn btn-outline-danger" title="Delete" onclick="return confirm('Delete this order?')">
+                            <a href="?controller=warehouse&action=deleteSupplierOrder&id=<?= $o['supplier_order_id'] ?>" class="btn btn-outline-danger" title="Delete" data-confirm="Delete this order?">
                                 <i class="bi bi-trash"></i>
                             </a>
                         </div>
@@ -416,7 +416,7 @@ function openBatchProcessModal() {
 
     var keys = Object.keys(groups);
     if (keys.length > 1) {
-        alert('Please select items of the same product only. You have selected ' + keys.length + ' different items.');
+        Dlg.alert('Please select items of the same product only. You have selected ' + keys.length + ' different items.');
         return;
     }
 

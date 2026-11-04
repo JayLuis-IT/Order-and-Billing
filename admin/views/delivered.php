@@ -229,12 +229,15 @@
                             data-dr="<?= htmlspecialchars($d['dr_number'] ?? '') ?>"
                             data-date="<?= date('Y-m-d', strtotime($d['delivery_date'])) ?>"
                             data-lot-items="<?= htmlspecialchars($d['lot_items'] ?? '[]') ?>"
-                            data-po-id="<?= $d['po_id'] ?>">
+                            data-po-id="<?= $d['po_id'] ?>"
+                            data-plate="<?= htmlspecialchars($d['plate_number'] ?? '') ?>"
+                            data-vehicle="<?= htmlspecialchars($d['vehicle_type'] ?? '') ?>"
+                            data-logistic="<?= htmlspecialchars($d['logistic_provider'] ?? '') ?>">
                             <i class="bi bi-pencil"></i>
                         </button>
                         <a href="?controller=admin&action=deleteDelivery&id=<?= $d['delivery_id'] ?>"
                            class="btn btn-sm btn-outline-danger"
-                           onclick="return confirm('Delete this delivery and roll back its quantities?')"
+                           data-confirm="Delete this delivery and roll back its quantities?"
                            title="Delete delivery and undo its impact">
                             <i class="bi bi-trash"></i>
                         </a>
@@ -290,7 +293,6 @@ foreach (['search', 'filter_customer', 'filter_item', 'filter_dr', 'filter_po', 
             <form id="editDeliveryForm">
                 <div class="modal-body">
                     <input type="hidden" name="delivery_id" id="editDeliveryId">
-                    <input type="hidden" name="po_id" id="editPoId">
                     <div class="row">
                         <div class="col-md-6 mb-3">
                             <label class="form-label">DR Number</label>
@@ -301,13 +303,38 @@ foreach (['search', 'filter_customer', 'filter_item', 'filter_dr', 'filter_po', 
                             <input type="date" name="delivery_date" id="editDeliveryDate" class="form-control">
                         </div>
                     </div>
+                    <div class="row">
+                        <div class="col-md-12 mb-3">
+                            <label class="form-label">Purchase Order <span class="text-danger">*</span></label>
+                            <select name="po_id" id="editPoSelect" class="form-select">
+                                <option value="">-- Select Purchase Order --</option>
+                                <?php foreach (($poEditOptions ?? []) as $po): ?>
+                                    <option value="<?= (int)$po['po_id'] ?>"><?= htmlspecialchars($po['po_number'] ?: ($po['customer_po_number'] ?? ('PO #' . $po['po_id']))) ?> — <?= htmlspecialchars($po['customer_name'] ?? '') ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-4 mb-3">
+                            <label class="form-label">Plate No.</label>
+                            <input type="text" name="plate_number" id="editPlateNumber" class="form-control" placeholder="Plate number">
+                        </div>
+                        <div class="col-md-4 mb-3">
+                            <label class="form-label">Vehicle Type</label>
+                            <input type="text" name="vehicle_type" id="editVehicleType" class="form-control" placeholder="Vehicle type">
+                        </div>
+                        <div class="col-md-4 mb-3">
+                            <label class="form-label">Logistic Provider</label>
+                            <input type="text" name="logistic_provider" id="editLogisticProvider" class="form-control" placeholder="Logistic provider">
+                        </div>
+                    </div>
                     <div id="editLotItemsRow" style="display:none;">
-                        <label class="form-label fw-bold">Lot Items â€” Edit Quantity</label>
+                        <label class="form-label fw-bold">Lot Items — Edit Item, Lot &amp; Quantity</label>
                         <div class="border rounded p-2" style="background:#f8f9fa;">
                             <div class="row mb-1">
                                 <div class="col-md-4"><small class="text-muted fw-bold">Item</small></div>
-                                <div class="col-md-3"><small class="text-muted fw-bold">Lot Number</small></div>
-                                <div class="col-md-5"><small class="text-muted fw-bold">Quantity</small></div>
+                                <div class="col-md-4"><small class="text-muted fw-bold">Lot Number</small></div>
+                                <div class="col-md-4"><small class="text-muted fw-bold">Quantity</small></div>
                             </div>
                             <div id="editLotItemsContainer"></div>
                         </div>
@@ -490,7 +517,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 })
                 .catch(function(error) {
                     console.error('Error:', error);
-                    alert('Failed to load PO details: ' + error.message);
+                    Dlg.alert('Failed to load PO details: ' + error.message);
                 });
         });
     });
@@ -501,8 +528,20 @@ document.querySelectorAll('.editDeliveryBtn').forEach(function(btn) {
         document.getElementById('editDeliveryId').value = this.dataset.deliveryId;
         document.getElementById('editDrNumber').value = this.dataset.dr || '';
         document.getElementById('editDeliveryDate').value = this.dataset.date || '';
-        document.getElementById('editPoId').value = this.dataset.poId || '';
+        document.getElementById('editPlateNumber').value = this.dataset.plate || '';
+        document.getElementById('editVehicleType').value = this.dataset.vehicle || '';
+        document.getElementById('editLogisticProvider').value = this.dataset.logistic || '';
+        var poSelect = document.getElementById('editPoSelect');
+        poSelect.value = this.dataset.poId || '';
+        if (!poSelect.value && this.dataset.poId) {
+            var poOpt = document.createElement('option');
+            poOpt.value = this.dataset.poId;
+            poOpt.textContent = 'PO #' + this.dataset.poId + ' (current)';
+            poSelect.insertBefore(poOpt, poSelect.options[1] || null);
+            poSelect.value = this.dataset.poId;
+        }
 
+        var deliveryId = this.dataset.deliveryId;
         var lotItemsRaw = JSON.parse(this.dataset.lotItems || '[]');
         var mergedED = {};
         lotItemsRaw.forEach(function(item) {
@@ -512,31 +551,123 @@ document.querySelectorAll('.editDeliveryBtn').forEach(function(btn) {
         var lotItems = Object.values(mergedED);
         var container = document.getElementById('editLotItemsContainer');
         container.innerHTML = '';
+        var itemEditOptions = <?= json_encode(array_map(function($i) {
+            return ['item_id' => (int)$i['item_id'], 'item_code' => $i['item_code'], 'item_description' => $i['item_description']];
+        }, $itemEditOptions ?? [])) ?>;
+        function escapeAttr(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
+
+        // Items shown in the edit rows are filtered to the selected PO selection
+        function loadPoItems(poId, rowsCallback) {
+            var poSel = document.getElementById('editPoSelect');
+            var selectSource = [];
+            if (poId) {
+                fetch('?controller=admin&action=getItemsForDeliveryEdit&po_id=' + encodeURIComponent(poId))
+                    .then(function(r) { return r.json(); })
+                    .then(function(poItems) {
+                        poSel.dataset.poItems = JSON.stringify(poItems || []);
+                        if (rowsCallback) rowsCallback();
+                    });
+            } else {
+                poSel.dataset.poItems = JSON.stringify(itemEditOptions);
+                if (rowsCallback) rowsCallback();
+            }
+        }
+
+        function populateItemSelect(rowEl) {
+            var poSel = document.getElementById('editPoSelect');
+            var source;
+            try { source = JSON.parse(poSel.dataset.poItems || '[]'); } catch (e) { source = itemEditOptions; }
+            if (!source || !source.length) source = itemEditOptions;
+            var itemSel = rowEl.querySelector('.edit-lot-item');
+            itemSel.innerHTML = '<option value="">-- Select item --</option>';
+            var currentCode = rowEl.dataset.currentItemCode || rowEl.dataset.oldItemCode || '';
+            source.forEach(function(it) {
+                var opt = document.createElement('option');
+                opt.value = it.item_id;
+                opt.dataset.itemCode = it.item_code;
+                opt.textContent = it.item_code + ' - ' + it.item_description;
+                itemSel.appendChild(opt);
+                if ((currentCode || '') === it.item_code) itemSel.value = it.item_id;
+            });
+            if (!itemSel.value && currentCode) {
+                var opt = document.createElement('option');
+                opt.value = '';
+                opt.dataset.itemCode = currentCode;
+                opt.textContent = currentCode + ' (current)';
+                itemSel.appendChild(opt);
+            }
+        }
+
+        function loadLotChoices(rowEl, itemId) {
+            var lotSel = rowEl.querySelector('.edit-lot-number');
+            var currentLot = lotSel.dataset.currentLot || '';
+            if (!itemId) {
+                lotSel.innerHTML = '<option value="">-- Select item first --</option>';
+                return;
+            }
+            fetch('?controller=admin&action=getLotChoicesForDeliveryEdit&item_id=' + encodeURIComponent(itemId) + '&delivery_id=' + encodeURIComponent(deliveryId))
+                .then(function(r) { return r.json(); })
+                .then(function(lots) {
+                    var html = '<option value="">-- Select lot --</option>';
+                    (lots || []).forEach(function(l) {
+                        // Only lots with available stock; the delivery's own current lot is
+                        // always kept (its qty goes back on the shelf once replaced)
+                        if ((l.available_quantity || 0) <= 0 && l.lot_number !== currentLot) return;
+                        html += '<option value="' + l.lot_id + '" data-lot-number="' + escapeAttr(l.lot_number) + '">' +
+                            escapeAttr(l.lot_number) + ' (Avail: ' + (l.available_quantity || 0).toLocaleString() + ')</option>';
+                    });
+                    // keep the currently-stored lot selectable even if no production row backs it
+                    if (currentLot && !Array.prototype.some.call(lots, function(l) { return l.lot_number === currentLot; })) {
+                        html += '<option value="0" data-lot-number="' + escapeAttr(currentLot) + '">' + escapeAttr(currentLot) + ' (current)</option>';
+                    }
+                    lotSel.innerHTML = html;
+                    var match = Array.prototype.find.call(lotSel.options, function(o) { return o.dataset.lotNumber === currentLot; });
+                    if (match) lotSel.value = match.value;
+                });
+        }
 
         if (lotItems.length > 0) {
             document.getElementById('editLotItemsRow').style.display = 'block';
-            lotItems.forEach(function(li, idx) {
-                var uomConv = li.uom_conversion || '';
-                var actualConv = li.actual_uom_conversion || '';
-                var uom = li.item_uom || '';
-                var displayConv = actualConv || uomConv;
-
+            document.getElementById('editPoSelect').dataset.poItems = JSON.stringify(itemEditOptions);
+            lotItems.forEach(function(li) {
                 var row = document.createElement('div');
                 row.className = 'row mb-2 align-items-center';
-                if (uom === 'CS') {
-                    row.innerHTML = '<div class="col-md-4"><small class="fw-bold">' + (li.item_description || '-') + '</small></div>' +
-                        '<div class="col-md-3"><small class="text-muted">' + (li.lot_number || '-') + '</small></div>' +
-                        '<div class="col-md-5"><input type="number" class="form-control form-control-sm edit-lot-qty" ' +
-                        'data-lot-id="' + li.lot_id + '" data-poi-id="' + li.poi_id + '" ' +
-                        'data-old-qty="' + (li.qty || 0) + '" value="' + (li.qty || 0) + '" min="1"></div>';
-                } else {
-                    row.innerHTML = '<div class="col-md-4"><small class="fw-bold">' + (li.item_description || '-') + '</small></div>' +
-                        '<div class="col-md-3"><small class="text-muted">' + (li.lot_number || '-') + '</small></div>' +
-                        '<div class="col-md-5"><input type="number" class="form-control form-control-sm edit-lot-qty" ' +
-                        'data-lot-id="' + li.lot_id + '" data-poi-id="' + li.poi_id + '" ' +
-                        'data-old-qty="' + (li.qty || 0) + '" value="' + (li.qty || 0) + '" min="1"></div>';
-                }
+                row.dataset.oldLotNumber = li.lot_number || '';
+                row.dataset.oldItemCode = li.item_code || '';
+                row.dataset.currentItemCode = li.item_code || '';
+                row.dataset.lotId = li.lot_id || '';
+                row.dataset.poiId = li.poi_id || '';
+                row.dataset.oldQty = li.qty || 0;
+                row.innerHTML = '<div class="col-md-4">' +
+                        '<select class="form-select form-select-sm edit-lot-item"><option value="">-- Select item --</option></select>' +
+                    '</div>' +
+                    '<div class="col-md-4">' +
+                        '<select class="form-select form-select-sm edit-lot-number" data-current-lot="' + escapeAttr(li.lot_number) + '">' +
+                            '<option value="">-- Select lot --</option>' +
+                        '</select>' +
+                    '</div>' +
+                    '<div class="col-md-4">' +
+                        '<input type="number" class="form-control form-control-sm edit-lot-qty" value="' + (li.qty || 0) + '" min="1">' +
+                    '</div>';
                 container.appendChild(row);
+
+                populateItemSelect(row);
+                var itemSel = row.querySelector('.edit-lot-item');
+                itemSel.addEventListener('change', function() {
+                    loadLotChoices(row, itemSel.value);
+                });
+                loadLotChoices(row, itemSel.value);
+            });
+            // Filter item options when the PO selection changes in the modal
+            document.getElementById('editPoSelect').addEventListener('change', function() {
+                var rows = document.querySelectorAll('#editLotItemsContainer .row');
+                loadPoItems(this.value, function() {
+                    rows.forEach(function(row) { populateItemSelect(row); });
+                });
+            });
+            // Preload PO-scoped item list for the current PO on open
+            loadPoItems(document.getElementById('editPoSelect').value, function() {
+                document.querySelectorAll('#editLotItemsContainer .row').forEach(function(row) { populateItemSelect(row); });
             });
         } else {
             document.getElementById('editLotItemsRow').style.display = 'none';
@@ -552,20 +683,48 @@ document.getElementById('editDeliveryForm').addEventListener('submit', function(
     var formData = new FormData(this);
 
     var lotChanges = [];
-    document.querySelectorAll('.edit-lot-qty').forEach(function(input) {
-        var oldQty = parseInt(input.dataset.oldQty) || 0;
-        var newQty = parseInt(input.value) || 0;
-        var lotId = input.dataset.lotId;
-        if (newQty !== oldQty) {
+    var itemChanges = [];
+    var rows = document.querySelectorAll('#editLotItemsContainer .row');
+    rows.forEach(function(rowEl) {
+        var itemSel = rowEl.querySelector('.edit-lot-item');
+        var lotSel = rowEl.querySelector('.edit-lot-number');
+        var qtyInput = rowEl.querySelector('.edit-lot-qty');
+        if (!itemSel || !lotSel || !qtyInput) return;
+
+        var oldQty = parseInt(rowEl.dataset.oldQty) || 0;
+        var newQty = parseInt(qtyInput.value) || 0;
+        var oldLotNumber = rowEl.dataset.oldLotNumber || '';
+        var oldItemCode = rowEl.dataset.oldItemCode || '';
+        var selectedLotId = lotSel.value;
+        var selectedOpt = lotSel.options[lotSel.selectedIndex];
+        var newLotNumber = selectedOpt ? (selectedOpt.dataset.lotNumber || '') : '';
+        var selectedOptItem = itemSel.options[itemSel.selectedIndex];
+        var newItemCode = selectedOptItem ? (selectedOptItem.dataset.itemCode || '') : '';
+
+        var itemChanged = !!itemSel.value && oldItemCode !== newItemCode;
+        var lotChanged = !!selectedLotId && oldLotNumber !== newLotNumber;
+
+        if (itemChanged || lotChanged) {
+            itemChanges.push({
+                old_lot_number: oldLotNumber,
+                old_item_code: oldItemCode,
+                old_qty: oldQty,
+                new_item_id: itemSel.value,
+                new_lot_id: selectedLotId,
+                new_qty: newQty
+            });
+        } else if (newQty !== oldQty) {
             lotChanges.push({
-                lot_id: lotId,
-                poi_id: input.dataset.poiId,
+                lot_id: rowEl.dataset.lotId,
+                poi_id: rowEl.dataset.poiId,
                 old_qty: oldQty,
                 new_qty: newQty
             });
         }
     });
+
     formData.append('lot_changes', JSON.stringify(lotChanges));
+    formData.append('item_changes', JSON.stringify(itemChanges));
 
     fetch('?controller=admin&action=updateDelivery', {
         method: 'POST',
@@ -575,14 +734,14 @@ document.getElementById('editDeliveryForm').addEventListener('submit', function(
     .then(function(data) {
         if (data.success) {
             bootstrap.Modal.getInstance(document.getElementById('editDeliveryModal')).hide();
-            alert('Delivery updated successfully!');
+            Dlg.alert('Delivery updated successfully!');
             location.reload();
         } else {
-            alert('Error: ' + (data.error || 'Failed to update delivery'));
+            Dlg.alert('Error: ' + (data.error || 'Failed to update delivery'));
         }
     })
     .catch(function(err) {
-        alert('Error updating delivery: ' + err.message);
+        Dlg.alert('Error updating delivery: ' + err.message);
     });
 });
 </script>

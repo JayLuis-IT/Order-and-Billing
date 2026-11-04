@@ -19,7 +19,7 @@ class FinanceController {
         $action = $_GET['action'] ?? '';
         $allowedActions = ['getPODetails', 'getDeliveryDetails', 'getUnpricedItemsByCustomer'];
         if (!in_array($action, $allowedActions) && ($_SESSION['department'] ?? '') !== 'finance') {
-            header('Location: ?controller=admin');
+            header('Location: ' . \App\Helpers\RoleHelper::homeUrl());
             exit;
         }
         $this->financeModel = new FinanceModel();

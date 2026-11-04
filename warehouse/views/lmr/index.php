@@ -104,7 +104,7 @@
                                         <?php endif; ?>
                                         <?php if (($lmr['lmr_status'] ?? '') === 'Released'): ?>
                                             <a href="?controller=lmr&action=printLmr&id=<?= (int) ($lmr['lmr_id'] ?? 0) ?>" class="btn btn-outline-dark" target="_blank">Print LMR</a>
-                                            <form method="POST" action="?controller=lmr&action=cancel" class="d-inline" onsubmit="return confirm('Cancel this LMR and release all allocated materials?');">
+                                            <form method="POST" action="?controller=lmr&action=cancel" class="d-inline" data-confirm="Cancel this LMR and release all allocated materials?">
                                                 <input type="hidden" name="lmr_id" value="<?= (int) ($lmr['lmr_id'] ?? 0) ?>">
                                                 <button type="submit" class="btn btn-outline-danger">Cancel</button>
                                             </form>

@@ -166,12 +166,12 @@
                         <?php endif; ?>
                     </td>
                     <td>
-                        <button class="btn btn-sm btn-outline-primary" onclick="openEditModal(<?= $h['history_id'] ?>, '<?= htmlspecialchars(addslashes($h['lot_number'] ?? ''), ENT_QUOTES) ?>', <?= $h['added_quantity'] ?>)">
+                        <button class="btn btn-sm btn-outline-primary" onclick="openEditModal(<?= $h['history_id'] ?>, <?= (int)($h['item_id'] ?? 0) ?>, '<?= htmlspecialchars(addslashes($h['lot_number'] ?? ''), ENT_QUOTES) ?>', <?= $h['added_quantity'] ?>)">
                             <i class="bi bi-pencil"></i>
                         </button>
                         <a href="?controller=admin&action=deleteProductionHistory&id=<?= $h['history_id'] ?>"
                            class="btn btn-sm btn-outline-danger"
-                           onclick="return confirm('Delete this production entry and roll back its quantity?')"
+                           data-confirm="Delete this production entry and roll back its quantity?"
                            title="Delete this entry and undo its impact">
                             <i class="bi bi-trash"></i>
                         </a>
@@ -197,23 +197,29 @@
             <div class="modal-body">
                 <input type="hidden" id="editHistoryId">
                 <div class="mb-3">
-                    <label class="form-label">Current Lot Number</label>
-                    <input type="text" id="editCurrentLot" class="form-control" readonly>
+                    <label class="form-label">Item Code / Description <span class="text-danger">*</span></label>
+                    <select id="editNewItem" class="form-select form-select-sm d-none">
+                        <option value="">-- Choose an item --</option>
+                        <?php foreach (($itemList ?? []) as $it): ?>
+                            <option value="<?= (int)$it['item_id'] ?>"><?= htmlspecialchars($it['item_code']) ?> - <?= htmlspecialchars($it['item_description']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <div class="searchable-wrap">
+                        <input type="text" class="form-control form-control-sm searchable-input" placeholder="Type to search item..." autocomplete="off" id="editNewItemInput">
+                        <i class="bi bi-chevron-down searchable-arrow"></i>
+                        <ul class="searchable-list" id="editNewItemList"></ul>
+                    </div>
                 </div>
                 <div class="mb-3">
-                    <label class="form-label">New Lot Number <span class="text-danger">*</span></label>
+                    <label class="form-label">Lot Number <span class="text-danger">*</span></label>
                     <input type="text" id="editNewLot" class="form-control" placeholder="Enter correct lot number" required>
                 </div>
                 <div class="mb-3">
-                    <label class="form-label">Current Quantity</label>
-                    <input type="text" id="editCurrentQty" class="form-control" readonly>
-                </div>
-                <div class="mb-3">
-                    <label class="form-label">New Quantity <span class="text-danger">*</span></label>
+                    <label class="form-label">Added Lot Quantity <span class="text-danger">*</span></label>
                     <input type="number" id="editNewQty" class="form-control" min="1" required>
                 </div>
                 <div class="alert alert-info py-2 mb-0">
-                    <small><i class="bi bi-info-circle me-1"></i>Changing quantity will update production progress.</small>
+                    <small><i class="bi bi-info-circle me-1"></i>Saving will cleanly overwrite this record as if it was entered this way originally. Old stock is reversed and new stock is applied.</small>
                 </div>
             </div>
             <div class="modal-footer">
@@ -236,10 +242,9 @@
                 <p class="text-muted mb-3">Please review the changes before saving.</p>
                 <table class="table table-bordered mb-0">
                     <tr><th style="width:40%">History ID</th><td id="prevHistId"></td></tr>
-                    <tr><th>Previous Lot</th><td id="prevOldLot"></td></tr>
+                    <tr><th>Item</th><td id="prevNewItem"></td></tr>
                     <tr><th>New Lot</th><td id="prevNewLot"></td></tr>
-                    <tr><th>Previous Lot Qty</th><td id="prevOldQty"></td></tr>
-                     <tr><th>New Lot Qty</th><td id="prevNewQty"></td></tr>
+                    <tr><th>New Lot Qty</th><td id="prevNewQty"></td></tr>
                 </table>
             </div>
             <div class="modal-footer">
@@ -281,29 +286,107 @@ foreach (['search', 'filter_item', 'filter_lot', 'filter_date_from', 'filter_dat
 <?php endif; ?>
 
 <script>
-function openEditModal(historyId, currentLot, currentQty) {
+var _editItemSearch;
+
+function refreshEditItemSearchable() {
+    var select = document.getElementById('editNewItem');
+    var input = document.getElementById('editNewItemInput');
+    input.value = select.value && select.selectedIndex >= 0 ? select.options[select.selectedIndex].textContent : '';
+}
+
+function initEditItemSearchable() {
+    var input = document.getElementById('editNewItemInput');
+    var list = document.getElementById('editNewItemList');
+    var select = document.getElementById('editNewItem');
+    if (!input || !list || !select) return;
+
+    function rebuildList() {
+        list.innerHTML = '';
+        Array.from(select.options).forEach(function(opt) {
+            if (!opt.value) return;
+            var li = document.createElement('li');
+            li.textContent = opt.textContent;
+            li.dataset.value = opt.value;
+            if (opt.value === select.value) li.classList.add('active');
+            list.appendChild(li);
+        });
+    }
+
+    input.addEventListener('focus', function() {
+        this.value = '';
+        rebuildList();
+        list.classList.add('show');
+    });
+
+    input.addEventListener('input', function() {
+        var term = this.value.toLowerCase();
+        var found = false;
+        list.querySelectorAll('li').forEach(function(li) {
+            var match = li.textContent.toLowerCase().indexOf(term) > -1;
+            li.style.display = match ? '' : 'none';
+            if (match) found = true;
+        });
+        if (!found && term) {
+            list.innerHTML = '<li class="no-results">No results found</li>';
+            list.classList.add('show');
+        } else if (!term) {
+            rebuildList();
+            list.classList.add('show');
+        }
+    });
+
+    list.addEventListener('mousedown', function(e) {
+        var li = e.target.closest('li');
+        if (!li || li.classList.contains('no-results')) return;
+        select.value = li.dataset.value;
+        input.value = li.textContent;
+        list.classList.remove('show');
+    });
+
+    input.addEventListener('blur', function() {
+        setTimeout(function() {
+            list.classList.remove('show');
+            if (!select.value) input.value = '';
+        }, 150);
+    });
+
+    rebuildList();
+}
+
+function openEditModal(historyId, itemId, currentLot, currentQty) {
     document.getElementById('editHistoryId').value = historyId;
-    document.getElementById('editCurrentLot').value = currentLot;
+    var select = document.getElementById('editNewItem');
+    var searchInput = document.getElementById('editNewItemInput');
+    searchInput.value = '';
+    select.value = itemId ? String(itemId) : '';
+    if (itemId && !select.value) {
+        var opt = document.createElement('option');
+        opt.value = String(itemId);
+        opt.text = 'Item #' + itemId + ' (current)';
+        select.insertBefore(opt, select.options[1] || null);
+        select.value = String(itemId);
+    }
     document.getElementById('editNewLot').value = currentLot;
-    document.getElementById('editCurrentQty').value = currentQty;
     document.getElementById('editNewQty').value = currentQty;
+    refreshEditItemSearchable();
     new bootstrap.Modal(document.getElementById('editRecordModal')).show();
 }
 
 function previewEditRecord() {
     var historyId = document.getElementById('editHistoryId').value;
-    var oldLot = document.getElementById('editCurrentLot').value;
+    var itemSelect = document.getElementById('editNewItem');
+    var newItemId = itemSelect.value;
+    var newItemText = itemSelect.selectedIndex > 0 ? itemSelect.options[itemSelect.selectedIndex].text : '';
     var newLot = document.getElementById('editNewLot').value.trim();
-    var oldQty = document.getElementById('editCurrentQty').value;
     var newQty = parseInt(document.getElementById('editNewQty').value);
 
-    if (!newLot) { alert('Please enter a lot number.'); return; }
-    if (!newQty || newQty <= 0) { alert('Please enter a valid quantity.'); return; }
+    if (!newItemId) { Dlg.alert('Please select an item.'); return; }
+    if (!newLot) { Dlg.alert('Please enter a lot number.'); return; }
+    if (!newQty || newQty <= 0) { Dlg.alert('Please enter a valid quantity.'); return; }
 
     document.getElementById('prevHistId').textContent = historyId;
-    document.getElementById('prevOldLot').textContent = oldLot;
+    document.getElementById('prevNewItem').textContent = newItemText;
     document.getElementById('prevNewLot').textContent = newLot;
-    document.getElementById('prevOldQty').textContent = oldQty;
     document.getElementById('prevNewQty').textContent = newQty;
 
     bootstrap.Modal.getInstance(document.getElementById('editRecordModal')).hide();
@@ -312,13 +395,15 @@ function previewEditRecord() {
 
 function saveEditRecord() {
     var historyId = document.getElementById('editHistoryId').value;
+    var newItemId = document.getElementById('editNewItem').value;
     var newLot = document.getElementById('editNewLot').value.trim();
     var newQty = parseInt(document.getElementById('editNewQty').value);
 
     fetch('?controller=admin&action=editHistoryRecord', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: 'history_id=' + encodeURIComponent(historyId) + 
+        body: 'history_id=' + encodeURIComponent(historyId) +
+              '&new_item_id=' + encodeURIComponent(newItemId) +
               '&new_lot_number=' + encodeURIComponent(newLot) +
               '&new_added_quantity=' + encodeURIComponent(newQty)
     }).then(function(r) { return r.json(); }).then(function(data) {
@@ -326,9 +411,9 @@ function saveEditRecord() {
         if (data.success) {
             location.reload();
         } else {
-            alert(data.message || 'Failed to update record.');
+            Dlg.alert(data.error || data.message || 'Failed to update record.');
         }
-    }).catch(function() { alert('An error occurred.'); });
+    }).catch(function() { Dlg.alert('An error occurred.'); });
 }
 
 document.getElementById('confirmEditBtn').addEventListener('click', saveEditRecord);
@@ -341,6 +426,7 @@ document.getElementById('searchHistory').addEventListener('input', function() {
 });
 
 (function() {
+    initEditItemSearchable();
     var s = document.getElementById('searchHistory');
     if (s && s.value) { s.focus(); s.setSelectionRange(s.value.length, s.value.length); }
 })();

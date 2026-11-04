@@ -25,7 +25,7 @@ class ProductionController {
         }
         $publicActions = ['getPODetails', 'searchItems', 'fgInput', 'saveFgInput', 'getLotsForInventory', 'lmrEntry', 'getCustomerPOs', 'getItemBomInfo'];
         if (!in_array($action, $publicActions, true) && ($_SESSION['department'] ?? '') !== 'production') {
-            header('Location: ?controller=admin');
+            header('Location: ' . \App\Helpers\RoleHelper::homeUrl());
             exit;
         }
         $this->warehouseModel = new WarehouseModel();
@@ -107,6 +107,7 @@ class ProductionController {
                 if (!is_array($rejectStatuses)) $rejectStatuses = [$rejectStatuses];
                 if (!is_array($stsRemarks)) $stsRemarks = [$stsRemarks];
                 if (!is_array($pcsPerCases)) $pcsPerCases = [$pcsPerCases];
+                $savedLotGroups = [];
 
                 if (is_array($_POST['poi_id'] ?? null)) {
                     $poi_ids = $_POST['poi_id'];
@@ -143,6 +144,9 @@ class ProductionController {
                             ];
                             $this->warehouseModel->updateItemProducedQuantity($poi_id, $addedQty, $_SESSION['user_id'], $lot, $itemDesc, $autoStsRef, $extraStsData);
                             $this->saveItemConversionIfNeeded($poi_id, intval($pcsPerCases[$i] ?? 0));
+                            if ($lot && $lot !== '' && !empty($poi['item_id'])) {
+                                $savedLotGroups[] = ['item_id' => intval($poi['item_id']), 'lot_number' => $lot];
+                            }
                             $poLabel = $poi['customer_po_number'] ?? $poi['po_number'] ?? 'PO item #' . $poi_id;
                             $lotText = $lot ? ' for lot ' . $lot : '';
                             $lotQtyText = $lot ? ' (lot quantity ' . $previousLotQty . ' → ' . $newLotQty . ')' : '';
@@ -199,6 +203,9 @@ class ProductionController {
                             ];
                             $this->warehouseModel->updateItemProducedQuantity($poi_id, $addedQty, $_SESSION['user_id'], $lot, $itemDesc, $autoStsRef, $extraStsData);
                             $this->saveItemConversionIfNeeded($poi_id, intval($pcsPerCases[$i] ?? 0));
+                            if ($lot && $lot !== '' && !empty($poi['item_id'])) {
+                                $savedLotGroups[] = ['item_id' => intval($poi['item_id']), 'lot_number' => $lot];
+                            }
                             $poLabel = $poi['customer_po_number'] ?? $poi['po_number'] ?? 'PO item #' . $poi_id;
                             $lotText = $lot ? ' for lot ' . $lot : '';
                             $lotQtyText = $lot ? ' (lot quantity ' . $previousLotQty . ' → ' . $newLotQty . ')' : '';
@@ -223,6 +230,16 @@ class ProductionController {
                 NotificationHelper::create('production', 'Production Updated', 'A batch of production quantities has been updated [' . ($autoStsRef ?? 'batch') . ']', 'warehouse', '?controller=warehouse&action=purchaseOrders', $_SESSION['user_id']);
                 NotificationHelper::create('production', 'Production Updated', 'A batch of production quantities has been updated [' . ($autoStsRef ?? 'batch') . ']', 'admin', '?controller=admin&action=productionHistory', $_SESSION['user_id']);
                 NotificationHelper::qcInspectionNeeded('New production entries', '', $_SESSION['user_id']);
+
+                // Invariant guard: re-sync every touched lot group from production history
+                $savedGroups = [];
+                foreach ($savedLotGroups ?? [] as $g) {
+                    $k = $g['item_id'] . '|' . $g['lot_number'];
+                    if (!isset($savedGroups[$k])) $savedGroups[$k] = $g;
+                }
+                foreach ($savedGroups as $g) {
+                    $this->warehouseModel->reconcileLotGroup($g['item_id'], $g['lot_number'], $conn);
+                }
 
                 $conn->commit();
                 $_SESSION['success'] = 'Production quantity updated successfully';
@@ -384,6 +401,7 @@ class ProductionController {
                 $savedCount = 0;
                 $savedItemDescriptions = [];
                 $savedHistoryIds = [];
+                $savedLotGroups = [];
 
                 $stmtLast = $conn->prepare("SELECT sts_ref FROM production_history WHERE sts_ref LIKE 'STS-%' ORDER BY history_id DESC LIMIT 1 FOR UPDATE");
                 $stmtLast->execute();
@@ -479,6 +497,7 @@ class ProductionController {
                                 'new_quantity' => $newLotQty,
                             ]);
                         $savedHistoryIds[] = intval($conn->lastInsertId());
+                        $savedLotGroups[] = ['item_id' => intval($item_id), 'lot_number' => $lotNumber];
                     } catch (\Exception $e) {
                         error_log('FG Input production_history INSERT error: ' . $e->getMessage() . ' | Query params: lot_number=' . $lotNumber . ', item_desc=' . ($item['item_description'] ?? 'null') . ', sts_ref=' . $autoStsRef . ', user_id=' . $_SESSION['user_id'] . ', added_qty=' . $qty);
                         throw $e;
@@ -499,6 +518,16 @@ class ProductionController {
                 $descList = implode(', ', $uniqueDescriptions);
                 NotificationHelper::create('production', 'FG Input', $savedCount . ' lot(s) of FG produced for ' . $descList, 'warehouse', '?controller=warehouse&action=deliveries', $_SESSION['user_id']);
                 NotificationHelper::qcInspectionNeeded('New FG production: ' . $descList, '', $_SESSION['user_id']);
+
+                // Invariant guard: re-sync every touched lot group from production history
+                $savedGroups = [];
+                foreach ($savedLotGroups ?? [] as $g) {
+                    $k = $g['item_id'] . '|' . $g['lot_number'];
+                    if (!isset($savedGroups[$k])) $savedGroups[$k] = $g;
+                }
+                foreach ($savedGroups as $g) {
+                    $this->warehouseModel->reconcileLotGroup($g['item_id'], $g['lot_number'], $conn);
+                }
 
                 $conn->commit();
                 $_SESSION['success'] = $savedCount . ' lot(s) of FG recorded successfully for ' . $descList . '.';

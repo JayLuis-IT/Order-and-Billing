@@ -2,13 +2,22 @@
 namespace App\Controllers;
 
 use App\Models\QcModel;
+use App\Models\WarehouseModel;
+use App\Models\AuditModel;
 use App\Helpers\Pagination;
+use App\Helpers\RoleHelper;
+use App\Helpers\NotificationHelper;
 
 class QcController {
     private $qcModel;
 
     public function __construct() {
         $action = $_GET['action'] ?? '';
+        // index.php defaults the action to 'login'; missing/unknown action
+        // dispatches to index() — mirror that for the permission gates.
+        if ($action === '' || $action === 'login') {
+            $action = 'index';
+        }
         $isApiAction = in_array($action, ['apiGetPending', 'apiInspect', 'getInspectionDetails'], true);
 
         if (!isset($_SESSION['user_id'])) {
@@ -22,15 +31,52 @@ class QcController {
             exit;
         }
         if (!$isApiAction && (($_SESSION['department'] ?? '') !== 'qc')) {
-            header('Location: ?controller=admin');
+            header('Location: ' . RoleHelper::homeUrl());
             exit;
+        }
+        // Role gate: qc_admin = all; qc_inspector = delivery inspection only.
+        if (($_SESSION['department'] ?? '') === 'qc') {
+            $role = RoleHelper::currentRole();
+            if ($role === null) {
+                header('Location: ?controller=auth&action=noRole');
+                exit;
+            }
+            if (!RoleHelper::qcCan($role, $action)) {
+                if ($isApiAction) {
+                    header('Content-Type: application/json');
+                    http_response_code(403);
+                    echo json_encode(['success' => false, 'error' => 'You do not have access to that feature.']);
+                    exit;
+                }
+                $_SESSION['error'] = 'You do not have access to that feature.';
+                header('Location: ' . RoleHelper::homeUrl());
+                exit;
+            }
         }
         $this->qcModel = new QcModel();
     }
 
     public function index() {
-        header('Location: ?controller=qc&action=receivingInspection');
-        exit;
+        $role = RoleHelper::currentRole();
+
+        if ($role === 'qc_inspector') {
+            $counts = $this->qcModel->getInspectionCounts();
+            $data = [
+                'counts' => $counts,
+                'recentHistory' => array_slice($this->qcModel->getProductionHistoryForQC(), 0, 10),
+                'page_title' => 'QC Inspector Dashboard',
+            ];
+            $this->render('dashboard/inspector', $data);
+            return;
+        }
+
+        $data = [
+            'pendingQcItems' => $this->qcModel->getPendingQcItems(),
+            'completedQcItems' => $this->qcModel->getCompletedQcItems(),
+            'counts' => $this->qcModel->getInspectionCounts(),
+            'page_title' => 'QC Admin Dashboard',
+        ];
+        $this->render('dashboard/admin', $data);
     }
 
     public function receivingInspection() {
@@ -152,7 +198,7 @@ class QcController {
         $receivingItemId = (int) ($id ?? ($_POST['receiving_item_id'] ?? $_GET['id'] ?? 0));
         if ($receivingItemId <= 0) {
             $_SESSION['error'] = 'Receiving item not found.';
-            header('Location: ?controller=qc');
+            header('Location: ?controller=qc&action=receivingInspection');
             exit;
         }
 
@@ -171,11 +217,11 @@ class QcController {
             try {
                 $result = $this->qcModel->approveReceivingInspection($receivingItemId, $payload);
                 $_SESSION['success'] = 'Receiving inspection ' . strtolower($decision) . ' and stock status updated.';
-                header('Location: ?controller=qc');
+                header('Location: ?controller=qc&action=receivingInspection');
                 exit;
             } catch (\Exception $e) {
                 $_SESSION['error'] = $e->getMessage();
-                header('Location: ?controller=qc');
+                header('Location: ?controller=qc&action=receivingInspection');
                 exit;
             }
         }
@@ -183,7 +229,7 @@ class QcController {
         $receivingItem = $this->qcModel->getReceivingItemById($receivingItemId);
         if (!$receivingItem) {
             $_SESSION['error'] = 'Receiving item not found.';
-            header('Location: ?controller=qc');
+            header('Location: ?controller=qc&action=receivingInspection');
             exit;
         }
 
@@ -202,18 +248,165 @@ class QcController {
 
             if (!$historyId || empty($remark) || empty($inspectorName)) {
                 $_SESSION['error'] = 'Please fill in all required fields.';
-                header('Location: ?controller=qc');
+                header('Location: ?controller=qc&action=deliveryInspection');
                 exit;
             }
 
             $this->qcModel->updateQcRemark($historyId, $inspectorName, $remark);
             $_SESSION['success'] = 'QC remark saved successfully.';
-            header('Location: ?controller=qc');
+            header('Location: ?controller=qc&action=deliveryInspection');
             exit;
         }
     }
 
+    // ─── MRP Check — third approval gate (QC Admin) ──────────────────────────
+    // Every MRP run passes WHSE Admin → System Admin → QC Admin. The QC gate
+    // is per-item: each component is inspected via a Raw Material Analysis
+    // Report (Approved / Rejected / Hold / Waived). When every item carries a
+    // final disposition the run auto-completes — Approved/Waived requisitions
+    // release to Procurement and stock is reserved for them; Rejected ones
+    // are cancelled. qc_admin only — qc_inspector never reaches these.
+
+    /** Shared WarehouseModel access for the MRP Check actions. */
+    private function warehouseModel(): WarehouseModel {
+        return new WarehouseModel();
+    }
+
+    /**
+     * MRP Check retired — MRP runs release to Procurement at System Admin
+     * approval (two-gate flow); raw material inspection now happens at
+     * Receiving Inspection, before the RM is added to stock. The old page
+     * (and its auto-complete sweep that released runs) is blocked so no
+     * stale path can move requisitions.
+     */
+    public function mrpCheck() {
+        $_SESSION['success'] = 'MRP Check has been retired — inspect raw material at Receiving Inspection '
+            . '(QC approval there adds the stock). MRP runs no longer wait for QC.';
+        header('Location: ?controller=qc&action=receivingInspection');
+        exit;
+    }
+
+    /** JSON for the run items modal: frozen components + latest report state. (Retired with MRP Check.) */
+    public function mrpRunQcItems() {
+        header('Content-Type: application/json');
+        http_response_code(410);
+        echo json_encode(['success' => false, 'error' => 'MRP Check has been retired — inspect at Receiving Inspection.']);
+        exit;
+    }
+
+    /**
+     * Save one Raw Material Analysis Report (MRP context) — retired with MRP
+     * Check. Blocked so the stale path can never release/cancel requisitions
+     * or book stock behind the two-gate flow. (Receiving context saves through
+     * saveReceivingInspection — unchanged.)
+     */
+    public function saveMrpInspection() {
+        $_SESSION['success'] = 'MRP Check has been retired — inspect raw material at Receiving Inspection.';
+        header('Location: ?controller=qc&action=receivingInspection');
+        exit;
+    }
+
+    /** Save one Raw Material Analysis Report (Receiving context) + apply disposition. */
+    public function saveReceivingInspection() {
+        try {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                throw new \RuntimeException('POST required.');
+            }
+            $receivingItemId = intval($_POST['receiving_item_id'] ?? 0);
+            $disposition = strtoupper(trim((string) ($_POST['disposition'] ?? '')));
+            $reportId = $this->qcModel->saveAnalysisReport($this->inspectionPayloadFromPost('receiving'));
+            $result = $this->qcModel->applyReceivingDisposition($receivingItemId, $disposition, trim((string) ($_POST['remarks'] ?? '')));
+            AuditModel::log($_SESSION['user_id'], 'INSPECT', 'qc',
+                "Receiving inspection — receiving item #{$receivingItemId}, report #{$reportId}, disposition {$disposition}",
+                null, ['qc_status' => $result['decision'] ?? $disposition], 'receiving_item', $receivingItemId);
+
+            if (($result['decision'] ?? '') === 'HOLD') {
+                $_SESSION['success'] = 'Inspection saved — item placed ON HOLD and kept in the queue for re-inspection.';
+            } else {
+                $_SESSION['success'] = 'Receiving inspection ' . strtolower((string) ($result['decision'] ?? $disposition))
+                    . ' — stock status updated.';
+            }
+            if (!empty($_POST['save_and_print'])) {
+                header('Location: ?controller=qc&action=printAnalysisReport&id=' . $reportId);
+                exit;
+            }
+        } catch (\Exception $e) {
+            $_SESSION['error'] = $e->getMessage();
+        }
+        header('Location: ?controller=qc&action=receivingInspection');
+        exit;
+    }
+
+    /** Printable Raw Material Analysis Report (works for both contexts). */
+    public function printAnalysisReport() {
+        $reportId = intval($_GET['id'] ?? 0);
+        $report = $reportId > 0 ? $this->qcModel->getAnalysisReport($reportId) : false;
+        if (!$report) {
+            $_SESSION['error'] = 'Inspection report not found.';
+            header('Location: ?controller=qc');
+            exit;
+        }
+        $data['report'] = $report;
+        $data['page_title'] = 'Raw Material Analysis Report';
+        $this->render('analysis_report_print', $data);
+    }
+
+    /** JSON: one analysis report (Inspect prefill / retest). */
+    public function getAnalysisReport() {
+        header('Content-Type: application/json');
+        $reportId = intval($_GET['id'] ?? 0);
+        try {
+            $report = $reportId > 0 ? $this->qcModel->getAnalysisReport($reportId) : false;
+            if (!$report) {
+                echo json_encode(['success' => false, 'error' => 'Report not found.']);
+            } else {
+                echo json_encode(['success' => true, 'data' => $report]);
+            }
+        } catch (\Exception $e) {
+            http_response_code(500);
+            echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+        }
+        exit;
+    }
+
+    /**
+     * Map POST fields (shared report form) to saveAnalysisReport input.
+     * $context: 'mrp' (run_id + component_item_id) or 'receiving' (receiving_item_id).
+     */
+    private function inspectionPayloadFromPost(string $context): array {
+        $payload = [
+            'rm_name' => trim((string) ($_POST['rm_name'] ?? '')),
+            'supplier_name' => trim((string) ($_POST['supplier_name'] ?? '')),
+            'rr_number' => trim((string) ($_POST['rr_number'] ?? '')),
+            'lot_number' => trim((string) ($_POST['lot_number'] ?? '')),
+            'old_expiry_date' => trim((string) ($_POST['old_expiry_date'] ?? '')),
+            'date_delivered' => trim((string) ($_POST['date_delivered'] ?? '')),
+            'date_tested' => trim((string) ($_POST['date_tested'] ?? '')),
+            'expiry_date' => trim((string) ($_POST['expiry_date'] ?? '')),
+            'delivery_type' => trim((string) ($_POST['delivery_type'] ?? 'new_delivery')),
+            'disposition' => strtoupper(trim((string) ($_POST['disposition'] ?? ''))),
+            'remarks' => trim((string) ($_POST['remarks'] ?? '')),
+        ];
+        foreach (['appearance', 'color', 'odor', 'texture', 'ph', 'viscosity', 'sg', 'solubility', 'alcohol', 'microbial'] as $param) {
+            $payload[$param . '_spec'] = trim((string) ($_POST[$param . '_spec'] ?? ''));
+            $payload[$param . '_result'] = trim((string) ($_POST[$param . '_result'] ?? ''));
+        }
+        if ($context === 'mrp') {
+            $payload['run_id'] = intval($_POST['run_id'] ?? 0);
+            $payload['component_item_id'] = intval($_POST['component_item_id'] ?? 0);
+        } else {
+            $payload['receiving_item_id'] = intval($_POST['receiving_item_id'] ?? 0);
+        }
+        return $payload;
+    }
+
     private function render($view, $data = []) {
+        if (($_SESSION['department'] ?? '') === 'qc') {
+            $role = RoleHelper::currentRole();
+            $data['role'] = $role;
+            $data['roleLabel'] = RoleHelper::label($role);
+            $data['sideMenu'] = RoleHelper::qcMenu($role);
+        }
         extract($data);
         ob_start();
         include __DIR__ . "/../views/{$view}.php";

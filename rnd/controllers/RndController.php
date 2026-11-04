@@ -20,7 +20,7 @@ class RndController {
         }
         if (($_SESSION['department'] ?? '') !== 'rnd') {
             $_SESSION['error'] = 'Unauthorized access';
-            header('Location: ?controller=admin');
+            header('Location: ' . \App\Helpers\RoleHelper::homeUrl());
             exit;
         }
         $this->itemModel = new ItemModel();

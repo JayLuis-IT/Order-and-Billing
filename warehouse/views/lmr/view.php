@@ -16,7 +16,7 @@
             <a href="?controller=lmr&action=printLmr&id=<?= (int) ($lmr['lmr_id'] ?? 0) ?>" class="btn btn-outline-dark btn-sm" target="_blank">
                 <i class="bi bi-printer me-1"></i>Print LMR
             </a>
-            <form method="POST" action="?controller=lmr&action=cancel" class="d-inline" onsubmit="return confirm('Cancel this LMR and release all allocated materials back to inventory?');">
+            <form method="POST" action="?controller=lmr&action=cancel" class="d-inline" data-confirm="Cancel this LMR and release all allocated materials back to inventory?">
                 <input type="hidden" name="lmr_id" value="<?= (int) ($lmr['lmr_id'] ?? 0) ?>">
                 <button type="submit" class="btn btn-outline-danger btn-sm">
                     <i class="bi bi-x-circle me-1"></i>Cancel LMR
