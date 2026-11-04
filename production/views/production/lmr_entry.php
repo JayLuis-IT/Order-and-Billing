@@ -334,12 +334,12 @@ document.addEventListener('DOMContentLoaded', function () {
         const qty = parseFloat(lineQtyOrdered.value || '0');
 
         if (!selectedItem || !selectedItem.value) {
-            alert('Please select an item before saving the line.');
+            Dlg.alert('Please select an item before saving the line.');
             return;
         }
 
         if (!qty || qty <= 0) {
-            alert('Qty Ordered must be greater than zero.');
+            Dlg.alert('Qty Ordered must be greater than zero.');
             return;
         }
 

@@ -81,7 +81,7 @@
                     <td class="text-center">
                         <a href="?controller=finance&action=priceListToggle&id=<?= $item['price_list_id'] ?>" 
                            class="btn btn-sm btn-<?= $item['status'] ? 'success' : 'outline-secondary' ?>"
-                           onclick="return confirm('Are you sure you want to change the status?')"
+                           data-confirm="Are you sure you want to change the status?"
                            title="<?= $item['status'] ? 'Deactivate' : 'Activate' ?>">
                             <i class="bi bi-toggle-<?= $item['status'] ? 'on' : 'off' ?>"></i>
                         </a>

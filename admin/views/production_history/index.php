@@ -166,12 +166,12 @@
                         <?php endif; ?>
                     </td>
                     <td>
-                        <button class="btn btn-sm btn-outline-primary" onclick="openEditModal(<?= $h['history_id'] ?>, '<?= htmlspecialchars(addslashes($h['lot_number'] ?? ''), ENT_QUOTES) ?>', <?= $h['added_quantity'] ?>)">
+                        <button class="btn btn-sm btn-outline-primary" onclick="openEditModal(<?= $h['history_id'] ?>, '<?= htmlspecialchars(addslashes($h['lot_number'] ?? ''), ENT_QUOTES) ?>', <?= $h['added_quantity'] ?>, <?= (int) ($h['poi_id'] ?? 0) ?>, '<?= htmlspecialchars(addslashes($h['item_code'] ?? ''), ENT_QUOTES) ?>', '<?= htmlspecialchars(addslashes($h['item_description'] ?? ''), ENT_QUOTES) ?>')">
                             <i class="bi bi-pencil"></i>
                         </button>
                         <a href="?controller=admin&action=deleteProductionHistory&id=<?= $h['history_id'] ?>"
                            class="btn btn-sm btn-outline-danger"
-                           onclick="return confirm('Delete this production entry and roll back its quantity?')"
+                           data-confirm="Delete this production entry and roll back its quantity?"
                            title="Delete this entry and undo its impact">
                             <i class="bi bi-trash"></i>
                         </a>
@@ -196,6 +196,24 @@
             </div>
             <div class="modal-body">
                 <input type="hidden" id="editHistoryId">
+                <input type="hidden" id="editCurrentPoi">
+                <div class="mb-3">
+                    <label class="form-label">Current Item</label>
+                    <input type="text" id="editCurrentItem" class="form-control" readonly>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">New Item (Code / Description)</label>
+                    <select id="editNewItem" class="form-select">
+                        <option value="">No change — keep current item</option>
+                        <?php foreach (($editItemOptions ?? []) as $opt): ?>
+                        <option value="<?= (int) $opt['poi_id'] ?>">
+                            <?= htmlspecialchars($opt['item_code'] . ' — ' . $opt['item_description']) ?>
+                            (PO <?= htmlspecialchars($opt['po_number'] ?: $opt['po_id']) ?> — <?= htmlspecialchars($opt['customer_name']) ?>)
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <small class="text-muted">Changing the item moves the produced quantity (and the lot) to that item's PO line — it becomes deliverable there immediately. Stock on Hand is updated accordingly.</small>
+                </div>
                 <div class="mb-3">
                     <label class="form-label">Current Lot Number</label>
                     <input type="text" id="editCurrentLot" class="form-control" readonly>
@@ -213,7 +231,7 @@
                     <input type="number" id="editNewQty" class="form-control" min="1" required>
                 </div>
                 <div class="alert alert-info py-2 mb-0">
-                    <small><i class="bi bi-info-circle me-1"></i>Changing quantity will update production progress.</small>
+                    <small><i class="bi bi-info-circle me-1"></i>Changing quantity will update production progress. Changing the item also re-syncs Deliveries availability.</small>
                 </div>
             </div>
             <div class="modal-footer">
@@ -236,6 +254,8 @@
                 <p class="text-muted mb-3">Please review the changes before saving.</p>
                 <table class="table table-bordered mb-0">
                     <tr><th style="width:40%">History ID</th><td id="prevHistId"></td></tr>
+                    <tr><th>Current Item</th><td id="prevCurrentItem"></td></tr>
+                    <tr><th>New Item</th><td id="prevNewItem"></td></tr>
                     <tr><th>Previous Lot</th><td id="prevOldLot"></td></tr>
                     <tr><th>New Lot</th><td id="prevNewLot"></td></tr>
                     <tr><th>Previous Lot Qty</th><td id="prevOldQty"></td></tr>
@@ -281,12 +301,15 @@ foreach (['search', 'filter_item', 'filter_lot', 'filter_date_from', 'filter_dat
 <?php endif; ?>
 
 <script>
-function openEditModal(historyId, currentLot, currentQty) {
+function openEditModal(historyId, currentLot, currentQty, currentPoi, itemCode, itemDesc) {
     document.getElementById('editHistoryId').value = historyId;
     document.getElementById('editCurrentLot').value = currentLot;
     document.getElementById('editNewLot').value = currentLot;
     document.getElementById('editCurrentQty').value = currentQty;
     document.getElementById('editNewQty').value = currentQty;
+    document.getElementById('editCurrentPoi').value = currentPoi || 0;
+    document.getElementById('editCurrentItem').value = (itemCode || '') + (itemDesc ? ' — ' + itemDesc : '');
+    document.getElementById('editNewItem').value = '';
     new bootstrap.Modal(document.getElementById('editRecordModal')).show();
 }
 
@@ -296,11 +319,25 @@ function previewEditRecord() {
     var newLot = document.getElementById('editNewLot').value.trim();
     var oldQty = document.getElementById('editCurrentQty').value;
     var newQty = parseInt(document.getElementById('editNewQty').value);
+    var currentItem = document.getElementById('editCurrentItem').value;
+    var newItemSelect = document.getElementById('editNewItem');
+    var newPoi = newItemSelect.value;
 
-    if (!newLot) { alert('Please enter a lot number.'); return; }
-    if (!newQty || newQty <= 0) { alert('Please enter a valid quantity.'); return; }
+    if (!newLot) { Dlg.alert('Please enter a lot number.'); return; }
+    if (!newQty || newQty <= 0) { Dlg.alert('Please enter a valid quantity.'); return; }
+    if (newPoi && String(newPoi) === String(document.getElementById('editCurrentPoi').value)) {
+        newPoi = ''; // same item — treat as no change
+    }
 
     document.getElementById('prevHistId').textContent = historyId;
+    document.getElementById('prevCurrentItem').textContent = currentItem || '-';
+    if (newPoi) {
+        var label = newItemSelect.options[newItemSelect.selectedIndex].textContent;
+        document.getElementById('prevNewItem').innerHTML = '<span class="text-primary fw-bold">' + label + '</span>' +
+            '<div class="small text-muted">Lot + produced qty move to this PO line; SOH moves from the old item to the new item.</div>';
+    } else {
+        document.getElementById('prevNewItem').textContent = '-';
+    }
     document.getElementById('prevOldLot').textContent = oldLot;
     document.getElementById('prevNewLot').textContent = newLot;
     document.getElementById('prevOldQty').textContent = oldQty;
@@ -314,21 +351,23 @@ function saveEditRecord() {
     var historyId = document.getElementById('editHistoryId').value;
     var newLot = document.getElementById('editNewLot').value.trim();
     var newQty = parseInt(document.getElementById('editNewQty').value);
+    var newPoi = document.getElementById('editNewItem').value || '';
 
     fetch('?controller=admin&action=editHistoryRecord', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: 'history_id=' + encodeURIComponent(historyId) + 
+        body: 'history_id=' + encodeURIComponent(historyId) +
               '&new_lot_number=' + encodeURIComponent(newLot) +
-              '&new_added_quantity=' + encodeURIComponent(newQty)
+              '&new_added_quantity=' + encodeURIComponent(newQty) +
+              '&new_poi_id=' + encodeURIComponent(newPoi)
     }).then(function(r) { return r.json(); }).then(function(data) {
         bootstrap.Modal.getInstance(document.getElementById('editPreviewModal')).hide();
         if (data.success) {
             location.reload();
         } else {
-            alert(data.message || 'Failed to update record.');
+            Dlg.alert(data.error || data.message || 'Failed to update record.');
         }
-    }).catch(function() { alert('An error occurred.'); });
+    }).catch(function() { Dlg.alert('An error occurred.'); });
 }
 
 document.getElementById('confirmEditBtn').addEventListener('click', saveEditRecord);

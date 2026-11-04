@@ -2008,7 +2008,20 @@ class WarehouseModel extends BaseModel {
         }
     }
 
-    public function editHistoryRecord($history_id, $new_added_quantity, $new_lot_number, $edited_by) {
+    /** FG PO-item options (poi_id + labels) for the production-history item change dropdown. */
+    public function getItemOptionsForHistoryEdit() {
+        $conn = self::getConnection();
+        $sql = "SELECT poi.poi_id, poi.po_id, i.item_id, i.item_code, i.item_description, i.item_uom,
+                       po.po_number, c.customer_name
+                FROM purchase_order_items poi
+                JOIN purchase_orders po ON po.po_id = poi.po_id AND po.`remove` = 0
+                JOIN customers c ON c.customer_id = po.customer_id
+                JOIN items i ON i.item_id = poi.item_id AND i.item_type = 'FG' AND i.`remove` = 0
+                ORDER BY i.item_code ASC, po.po_number ASC";
+        return $conn->query($sql)->fetchAll(\PDO::FETCH_ASSOC);
+    }
+
+    public function editHistoryRecord($history_id, $new_added_quantity, $new_lot_number, $edited_by, $new_poi_id = null) {
         $conn = self::getConnection();
         $conn->beginTransaction();
         try {
@@ -2022,8 +2035,33 @@ class WarehouseModel extends BaseModel {
             $new_new_quantity = $history['previous_quantity'] + $new_added_quantity;
             $lot_changed = $new_lot_number !== $history['lot_number'];
 
-            $conn->prepare("UPDATE production_history 
-                SET added_quantity = :added, new_quantity = :new_qty, lot_number = :lot, 
+            // Item change snapshot (old PO-item + item) — done inside the same
+            // transaction as every other write of this edit.
+            $oldPoiRow = null;
+            if (!empty($history['poi_id'])) {
+                $poiStmt = $conn->prepare("SELECT poi.poi_id, poi.po_id, poi.item_id, i.item_code, i.item_description
+                    FROM purchase_order_items poi JOIN items i ON i.item_id = poi.item_id
+                    WHERE poi.poi_id = :poi_id");
+                $poiStmt->execute(['poi_id' => $history['poi_id']]);
+                $oldPoiRow = $poiStmt->fetch(\PDO::FETCH_ASSOC);
+            }
+            $newPoiRow = null;
+            $itemChanged = false;
+            $newPoiId = $new_poi_id !== null ? (int) $new_poi_id : 0;
+            if ($newPoiId > 0 && $oldPoiRow && $newPoiId !== (int) $oldPoiRow['poi_id']) {
+                $newStmt = $conn->prepare("SELECT poi.poi_id, poi.po_id, poi.item_id, i.item_code, i.item_description
+                    FROM purchase_order_items poi JOIN items i ON i.item_id = poi.item_id
+                    WHERE poi.poi_id = :poi_id");
+                $newStmt->execute(['poi_id' => $newPoiId]);
+                $newPoiRow = $newStmt->fetch(\PDO::FETCH_ASSOC);
+                if (!$newPoiRow) throw new \RuntimeException('Selected item (PO line) not found.');
+                if ((int) $newPoiRow['item_id'] !== (int) $oldPoiRow['item_id']) {
+                    $itemChanged = true;
+                }
+            }
+
+            $conn->prepare("UPDATE production_history
+                SET added_quantity = :added, new_quantity = :new_qty, lot_number = :lot,
                     old_added_quantity = :old_added, old_lot_number = :old_lot,
                     edited_by = :edited_by, date_edited = NOW()
                 WHERE history_id = :history_id")
@@ -2036,6 +2074,7 @@ class WarehouseModel extends BaseModel {
                     'edited_by' => $edited_by,
                     'history_id' => $history_id
                 ]);
+
 
             if ($history['poi_id'] && $delta != 0) {
                 $this->recalculateProducedQuantity($history['poi_id'], $conn);
@@ -2084,6 +2123,60 @@ class WarehouseModel extends BaseModel {
             $conn->prepare("UPDATE production_reports SET status = 'resolved', new_lot_number = :new_lot, date_resolved = NOW()
                 WHERE history_id = :history_id AND status = 'pending'")
                 ->execute(['new_lot' => $new_lot_number, 'history_id' => $history_id]);
+
+            // ── Item change cascade: re-point the lot + production log to the NEW
+            // item's PO line, and move the produced quantity across SOH rows.
+            if ($itemChanged && $oldPoiRow && $newPoiRow && !empty($history['poi_id'])) {
+                $effectiveLot = $lot_changed ? $new_lot_number : $history['lot_number'];
+
+                // 1 · update the production log itself (item / PO / description)
+                $conn->prepare("UPDATE production_history
+                    SET po_id = :po_id, item_id = :item_id, item_description = :desc
+                    WHERE history_id = :history_id")
+                    ->execute([
+                        'po_id' => $newPoiRow['po_id'],
+                        'item_id' => $newPoiRow['item_id'],
+                        'desc' => $newPoiRow['item_description'],
+                        'history_id' => $history_id,
+                    ]);
+
+                // 2 · re-point every active lot row of this record's PO line + lot
+                //     — production_lots IS the delivery-availability source
+                //     (getAvailableLotsForPO / getAvailableLotsForDelivery), so
+                //     Deliveries sees the lot under the new item's PO line right away.
+                $conn->prepare("UPDATE production_lots
+                    SET poi_id = :new_poi, po_id = :new_po, item_id = :new_item
+                    WHERE poi_id = :old_poi AND lot_number = :lot AND `is_removed` = 0")
+                    ->execute([
+                        'new_poi' => $newPoiRow['poi_id'],
+                        'new_po' => $newPoiRow['po_id'],
+                        'new_item' => $newPoiRow['item_id'],
+                        'old_poi' => $history['poi_id'],
+                        'lot' => $effectiveLot,
+                    ]);
+                // Any leftover same-lot rows on the OLD poi that were merged out
+                // during a lot change get removed so they never resurface.
+                if ($lot_changed) {
+                    $conn->prepare("UPDATE production_lots SET `is_removed` = 1
+                        WHERE poi_id = :old_poi AND lot_number = :old_lot")
+                        ->execute(['old_poi' => $history['poi_id'], 'old_lot' => $history['lot_number']]);
+                }
+
+                // 3 · SOH cascade — revert the produced qty on the OLD item's
+                //     stock row, credit it to the NEW item's stock row (upsert).
+                $conn->prepare("UPDATE inventory_balances SET qty_on_hand = qty_on_hand - :qty
+                    WHERE item_id = :item_id")
+                    ->execute(['qty' => $old_added, 'item_id' => $oldPoiRow['item_id']]);
+                $conn->prepare("INSERT INTO inventory_balances (item_id, site_code, qty_on_hand)
+                    VALUES (:item_id, :site, :qty)
+                    ON DUPLICATE KEY UPDATE qty_on_hand = qty_on_hand + :qty2")
+                    ->execute([
+                        'item_id' => $newPoiRow['item_id'],
+                        'site' => self::DEFAULT_SITE_CODE,
+                        'qty' => $new_added_quantity,
+                        'qty2' => $new_added_quantity,
+                    ]);
+            }
 
             $conn->commit();
             return true;
@@ -3202,7 +3295,7 @@ public function searchItems($query) {
                        i.item_code, i.item_description,
                        b.id AS bom_id, b.bom_code, b.batch_qty, b.batch_uom,
                        b.batch_qty AS fill_volume, b.batch_uom AS uom,
-                       b.batch_unit_divisor, b.is_legacy_formula
+                       b.batch_unit_divisor, b.is_legacy_formula, b.is_default
                 FROM purchase_order_items poi
                 JOIN items i ON poi.item_id = i.item_id AND i.`remove` = 0
                 LEFT JOIN fg_boms b ON b.fg_item_id = poi.item_id
@@ -3643,6 +3736,8 @@ public function searchItems($query) {
         switch ((string) $tab) {
             case 'requested':
                 return ['requested'];
+            case 'approval':
+                return ['pending_whse_approval', 'pending_sysadmin_approval', 'pending_qc_approval', 'pending_admin_approval'];
             case 'active':
                 return ['pending', 'processed', 'partially_received', 'For Inspection'];
             case 'history':
@@ -3656,7 +3751,14 @@ public function searchItems($query) {
      * Per-tab row counts for the Purchasing PO status tabs.
      */
     public function getPurchasingTabCounts() {
-        $sql = "SELECT status, COUNT(*) AS c FROM supplier_orders WHERE `remove` = 0 GROUP BY status";
+        // Same visibility predicate as getPurchasingPoFiltered() — tab badges
+        // must match the rows the Purchasing PO tables actually render
+        // (born MRP run-gate requisitions are hidden from both).
+        $sql = "SELECT status, COUNT(*) AS c FROM supplier_orders
+                WHERE `remove` = 0
+                  AND (status NOT IN ('pending_sysadmin_approval', 'pending_qc_approval')
+                       AND (status <> 'pending_whse_approval' OR po_group_id IS NOT NULL))
+                GROUP BY status";
         $byStatus = [];
         $all = 0;
         foreach (self::getConnection()->query($sql)->fetchAll(\PDO::FETCH_ASSOC) as $row) {
@@ -3673,6 +3775,7 @@ public function searchItems($query) {
         return [
             'all' => $all,
             'requested' => $sumOf($this->purchasingStatusTabSet('requested')),
+            'approval' => $sumOf($this->purchasingStatusTabSet('approval')),
             'active' => $sumOf($this->purchasingStatusTabSet('active')),
             'history' => $sumOf($this->purchasingStatusTabSet('history')),
         ];
@@ -3681,6 +3784,14 @@ public function searchItems($query) {
     public function getPurchasingPoFiltered($filters = []) {
         $where = ["so.`remove` = 0"];
         $params = [];
+
+        // MRP / Purchasing PO separation: the Purchasing PO tables show only
+        // procurement's PO work (requested → processed → receiving/history).
+        // Born MRP requisitions sitting at the RUN gates — pending_whse without
+        // a po_group_id (not yet processed), pending_sysadmin, pending_qc —
+        // belong to the MRP Approval pages and are hidden here.
+        $where[] = "(so.status NOT IN ('pending_sysadmin_approval', 'pending_qc_approval')
+                     AND (so.status <> 'pending_whse_approval' OR so.po_group_id IS NOT NULL))";
 
         // Exact status (dropdown) overrides the tab group.
         if (!empty($filters['status']) && $filters['status'] !== 'all') {
@@ -3711,6 +3822,7 @@ public function searchItems($query) {
 
         $whereSql = implode(' AND ', $where);
         // PO Ref is the explicit po_ref entered by procurement; '-' when empty.
+        // Grouped cart lines sort together via po_group_id.
         $sql = "SELECT so.*, i.item_code, i.item_description, i.item_type,
                        COALESCE(so.uom,
                                 (SELECT bi.uom FROM fg_bom_items bi
@@ -3728,7 +3840,7 @@ public function searchItems($query) {
                 JOIN items i ON so.item_id = i.item_id
                 JOIN users u ON so.created_by = u.user_id
                 WHERE {$whereSql}
-                ORDER BY so.date_created DESC";
+                ORDER BY so.date_created DESC, COALESCE(so.po_group_id, so.supplier_order_id) DESC, so.supplier_order_id ASC";
         $stmt = self::getConnection()->prepare($sql);
         $stmt->execute($params);
         return $stmt->fetchAll();
@@ -3753,6 +3865,40 @@ public function searchItems($query) {
         $stmt = self::getConnection()->prepare($sql);
         $stmt->execute(['id' => $id]);
         return $stmt->fetch() ?: false;
+    }
+
+    /**
+     * All live supplier_order lines for a set of MRP runs — used by the
+     * Purchasing PO list so a Source group's View/Process modals can show
+     * every line of the run, even when a status tab filters some out.
+     * Returns [mrp_run_id => [line, ...]] ordered by line id.
+     */
+    public function getSupplierOrdersByRuns($runIds) {
+        $runIds = array_values(array_filter(array_map('intval', (array) $runIds)));
+        if (!count($runIds)) {
+            return [];
+        }
+        $placeholders = implode(', ', array_fill(0, count($runIds), '?'));
+        $stmt = self::getConnection()->prepare(
+            "SELECT so.*, i.item_code, i.item_description,
+                    COALESCE(so.uom,
+                        (SELECT bi.uom FROM fg_bom_items bi
+                         JOIN fg_boms b ON b.id = bi.bom_id AND b.status = 'active'
+                         WHERE bi.item_id = so.item_id
+                           AND bi.uom IS NOT NULL AND bi.uom <> ''
+                         ORDER BY bi.id DESC LIMIT 1),
+                        i.item_uom) AS item_uom
+             FROM supplier_orders so
+             JOIN items i ON so.item_id = i.item_id
+             WHERE so.mrp_run_id IN ({$placeholders}) AND so.`remove` = 0
+             ORDER BY so.supplier_order_id ASC"
+        );
+        $stmt->execute($runIds);
+        $byRun = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $byRun[(int) $row['mrp_run_id']][] = $row;
+        }
+        return $byRun;
     }
 
     public function getPoFullDetails($id) {
@@ -3992,10 +4138,206 @@ public function searchItems($query) {
         return self::getConnection()->lastInsertId();
     }
 
+    /**
+     * Manually created multi-line Purchasing PO (cart save). Every line of the
+     * PO shares one po_group_id (the id of the first inserted line) so WHSE
+     * Admin / System Admin decisions can act on the whole group. All lines are
+     * born at pending_whse_approval — the first gate of the manual PO chain.
+     * $header: po_ref, order_date, expected_date, remarks, created_by
+     * $lines:  [ [supplier_name, item_id, quantity, unit_cost], ... ]
+     */
+    public function createManualPoGroup($header, $lines) {
+        $conn = self::getConnection();
+        $conn->beginTransaction();
+        try {
+            $groupId = null;
+            $insert = $conn->prepare(
+                "INSERT INTO supplier_orders
+                    (supplier_name, item_id, quantity, uom, unit_cost, order_date, expected_date,
+                     remarks, po_ref, created_by, status, po_id, received_qty, received_date, po_group_id)
+                 VALUES
+                    (:supplier_name, :item_id, :quantity, :uom, :unit_cost, :order_date, :expected_date,
+                     :remarks, :po_ref, :created_by, 'pending_whse_approval', NULL, 0, NULL, :po_group_id)"
+            );
+            foreach ($lines as $line) {
+                $uomStmt = $conn->prepare("SELECT item_uom FROM items WHERE item_id = ?");
+                $uomStmt->execute([$line['item_id']]);
+                $uom = $uomStmt->fetchColumn() ?: null;
+                $insert->execute([
+                    'supplier_name' => $line['supplier_name'],
+                    'item_id' => $line['item_id'],
+                    'quantity' => $line['quantity'],
+                    'uom' => $uom,
+                    'unit_cost' => $line['unit_cost'],
+                    'order_date' => $header['order_date'] ?? null,
+                    'expected_date' => $header['expected_date'] ?? null,
+                    'remarks' => $header['remarks'] ?? null,
+                    'po_ref' => $header['po_ref'] ?? null,
+                    'created_by' => $header['created_by'],
+                    'po_group_id' => $groupId,
+                ]);
+                if ($groupId === null) {
+                    $groupId = (int) $conn->lastInsertId();
+                    $conn->prepare("UPDATE supplier_orders SET po_group_id = ? WHERE supplier_order_id = ?")
+                        ->execute([$groupId, $groupId]);
+                }
+            }
+            $conn->commit();
+            return ['po_group_id' => $groupId, 'line_count' => count($lines)];
+        } catch (\Exception $e) {
+            $conn->rollBack();
+            throw $e;
+        }
+    }
+
+    /**
+     * WHSE Admin gate for a manual PO group: every line still at
+     * pending_whse_approval moves to pending_admin_approval (System Admin).
+     * Throws when the line is gone, not a manual PO, or already decided.
+     */
+    public function approveManualPoGroup($id, $approverLabel) {
+        $conn = self::getConnection();
+        $conn->beginTransaction();
+        try {
+            $stmt = $conn->prepare(
+                "SELECT supplier_order_id, status, po_group_id, mrp_run_id FROM supplier_orders
+                 WHERE supplier_order_id = :id AND `remove` = 0 FOR UPDATE"
+            );
+            $stmt->execute(['id' => $id]);
+            $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+            if (!$row) {
+                throw new \RuntimeException('Purchasing PO not found.');
+            }
+            if (!empty($row['mrp_run_id']) && empty($row['po_group_id'])) {
+                throw new \RuntimeException('This is a born MRP requisition — it uses the MRP run approval gate, not the PO draft gate.');
+            }
+            if ($row['status'] !== 'pending_whse_approval') {
+                throw new \RuntimeException('This PO is no longer awaiting WHSE Admin approval — refresh and try again.');
+            }
+            $groupId = $row['po_group_id'] ?: $row['supplier_order_id'];
+            $upd = $conn->prepare(
+                "UPDATE supplier_orders
+                 SET status = 'pending_admin_approval', last_update = NOW(),
+                     remarks = CONCAT(COALESCE(remarks, ''), CASE WHEN COALESCE(remarks, '') = '' THEN '' ELSE ' | ' END, :note)
+                 WHERE po_group_id = :gid AND status = 'pending_whse_approval' AND `remove` = 0"
+            );
+            $upd->execute([
+                'note' => '[Approval] WHSE Admin approved by ' . $approverLabel . ' on ' . date('Y-m-d H:i') . ' — awaiting System Admin.',
+                'gid' => $groupId,
+            ]);
+            $moved = $upd->rowCount();
+            if (!$moved) {
+                throw new \RuntimeException('No PO lines in this group are still awaiting WHSE Admin approval.');
+            }
+            $conn->commit();
+            return ['po_group_id' => $groupId, 'moved' => $moved];
+        } catch (\Exception $e) {
+            $conn->rollBack();
+            throw $e;
+        }
+    }
+
+    /**
+     * WHSE Admin reject for a manual PO group: every line still at
+     * pending_whse_approval is cancelled with the rejection reason.
+     */
+    public function rejectManualPoGroup($id, $reason, $approverLabel) {
+        $conn = self::getConnection();
+        $conn->beginTransaction();
+        try {
+            $stmt = $conn->prepare(
+                "SELECT supplier_order_id, status, po_group_id, mrp_run_id FROM supplier_orders
+                 WHERE supplier_order_id = :id AND `remove` = 0 FOR UPDATE"
+            );
+            $stmt->execute(['id' => $id]);
+            $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+            if (!$row) {
+                throw new \RuntimeException('Purchasing PO not found.');
+            }
+            if (!empty($row['mrp_run_id']) && empty($row['po_group_id'])) {
+                throw new \RuntimeException('This is a born MRP requisition — it uses the MRP run approval gate, not the PO draft gate.');
+            }
+            if ($row['status'] !== 'pending_whse_approval') {
+                throw new \RuntimeException('This PO is no longer awaiting WHSE Admin approval — refresh and try again.');
+            }
+            $groupId = $row['po_group_id'] ?: $row['supplier_order_id'];
+            $upd = $conn->prepare(
+                "UPDATE supplier_orders
+                 SET status = 'cancelled', last_update = NOW(),
+                     remarks = CONCAT(COALESCE(remarks, ''), CASE WHEN COALESCE(remarks, '') = '' THEN '' ELSE ' | ' END, :note)
+                 WHERE po_group_id = :gid AND status = 'pending_whse_approval' AND `remove` = 0"
+            );
+            $upd->execute([
+                'note' => '[Rejection] WHSE Admin rejected by ' . $approverLabel . ' on ' . date('Y-m-d H:i')
+                    . ' - Reason: ' . ($reason !== '' ? $reason : 'not provided'),
+                'gid' => $groupId,
+            ]);
+            $moved = $upd->rowCount();
+            if (!$moved) {
+                throw new \RuntimeException('No PO lines in this group are still awaiting WHSE Admin approval.');
+            }
+            $conn->commit();
+            return ['po_group_id' => $groupId, 'cancelled' => $moved];
+        } catch (\Exception $e) {
+            $conn->rollBack();
+            throw $e;
+        }
+    }
+
+    /**
+     * Lines for the printable Purchasing PO page: all lines sharing the
+     * group of the given line (or just that line when it has no group).
+     */
+    public function getPoGroupForPrint($id) {
+        // Resolve the group first: cart POs print their po_group_id lines,
+        // MRP-sourced lines print the WHOLE run (so a processed source shows
+        // every RM item), ungrouped single rows print just themselves.
+        $keyStmt = self::getConnection()->prepare(
+            "SELECT po_group_id, mrp_run_id, supplier_order_id FROM supplier_orders
+             WHERE supplier_order_id = :id AND `remove` = 0"
+        );
+        $keyStmt->execute(['id' => $id]);
+        $key = $keyStmt->fetch(\PDO::FETCH_ASSOC);
+        if (!$key) {
+            return [];
+        }
+        if (!empty($key['po_group_id'])) {
+            $col = 'so.po_group_id';
+            $gid = (int) $key['po_group_id'];
+        } elseif (!empty($key['mrp_run_id'])) {
+            $col = 'so.mrp_run_id';
+            $gid = (int) $key['mrp_run_id'];
+        } else {
+            $col = 'so.supplier_order_id';
+            $gid = (int) $key['supplier_order_id'];
+        }
+        $stmt = self::getConnection()->prepare(
+            "SELECT so.*, i.item_code, i.item_description,
+                    COALESCE(so.uom,
+                        (SELECT bi.uom FROM fg_bom_items bi
+                         JOIN fg_boms b ON b.id = bi.bom_id AND b.status = 'active'
+                         WHERE bi.item_id = so.item_id
+                           AND bi.uom IS NOT NULL AND bi.uom <> ''
+                         ORDER BY bi.id DESC LIMIT 1),
+                        i.item_uom) AS item_uom,
+                    u.full_name AS created_by_name
+             FROM supplier_orders so
+             JOIN items i ON so.item_id = i.item_id
+             JOIN users u ON so.created_by = u.user_id
+             WHERE so.`remove` = 0
+               AND {$col} = :gid
+             ORDER BY so.supplier_order_id ASC"
+        );
+        $stmt->execute(['gid' => $gid]);
+        return $stmt->fetchAll();
+    }
+
     public function processPurchasingPo($id, $data) {
         // po_ref is the explicit vendor PO reference entered by procurement;
         // COALESCE keeps an existing value when the field is submitted blank.
         // remarks keeps its COALESCE so blank submissions preserve receipt logs.
+        // PO drafts enter the WHSE Admin gate first (self-grouped via
+        // po_group_id — the discriminator vs. born MRP requisition rows).
         $sql = "UPDATE supplier_orders
                 SET supplier_name = :supplier_name,
                     quantity = :quantity,
@@ -4005,8 +4347,9 @@ public function searchItems($query) {
                     remarks = COALESCE(:remarks, remarks),
                     po_ref = COALESCE(:po_ref, po_ref),
                     po_id = :po_id,
-                    status = 'pending'
-                WHERE supplier_order_id = :id AND status IN ('requested', 'pending')";
+                    po_group_id = COALESCE(po_group_id, :group_id),
+                    status = 'pending_whse_approval'
+                WHERE supplier_order_id = :id AND status IN ('requested', 'pending_whse_approval', 'pending_admin_approval')";
         $stmt = self::getConnection()->prepare($sql);
         $stmt->execute([
             'supplier_name' => $data['supplier_name'],
@@ -4017,9 +4360,955 @@ public function searchItems($query) {
             'remarks' => $data['remarks'],
             'po_ref' => $data['po_ref'] ?? null,
             'po_id' => $data['po_id'] ?? null,
+            'group_id' => $id,
             'id' => $id
         ]);
         return $stmt->rowCount() > 0;
+    }
+
+    /**
+     * Group Process for an MRP source: every listed line of the run still at
+     * 'requested' gets its supplier/qty/cost plus the shared header
+     * (dates + one PO REF) and enters the PO approval chain at the WHSE gate:
+     *   pending_whse_approval (WHSE Admin) → pending_admin_approval (System Admin)
+     * The processed lines become one manual-style group (po_group_id = first
+     * line) — the discriminator that tells them apart from born requisition
+     * rows still awaiting the run's own WHSE gate (those have po_group_id NULL).
+     * $header: order_date, expected_date, po_ref
+     * $lines:  [ [supplier_order_id, supplier_name, quantity, unit_cost], ... ]
+     * Returns the number of lines moved; throws when nothing was processed.
+     */
+    public function processMrpPoGroup($runId, $header, $lines) {
+        $conn = self::getConnection();
+        $conn->beginTransaction();
+        try {
+            $moved = 0;
+            $groupId = null;
+            $upd = $conn->prepare(
+                "UPDATE supplier_orders
+                 SET supplier_name = :supplier_name,
+                     quantity = :quantity,
+                     unit_cost = :unit_cost,
+                     order_date = :order_date,
+                     expected_date = :expected_date,
+                     po_ref = :po_ref,
+                     status = 'pending_whse_approval',
+                     po_group_id = COALESCE(po_group_id, :group_id),
+                     last_update = NOW()
+                 WHERE supplier_order_id = :id
+                   AND mrp_run_id = :run_id
+                   AND status = 'requested'
+                   AND `remove` = 0"
+            );
+            foreach ($lines as $line) {
+                if ($groupId === null) {
+                    $groupId = (int) $line['supplier_order_id'];
+                }
+                $upd->execute([
+                    'supplier_name' => $line['supplier_name'],
+                    'quantity' => $line['quantity'],
+                    'unit_cost' => $line['unit_cost'],
+                    'order_date' => $header['order_date'] ?? null,
+                    'expected_date' => $header['expected_date'] ?? null,
+                    'po_ref' => $header['po_ref'] ?? null,
+                    'group_id' => $groupId,
+                    'id' => (int) $line['supplier_order_id'],
+                    'run_id' => (int) $runId,
+                ]);
+                $moved += $upd->rowCount();
+            }
+            if (!$moved) {
+                throw new \RuntimeException('No lines from this MRP source are still awaiting processing — refresh and try again.');
+            }
+            $conn->commit();
+            return $moved;
+        } catch (\Exception $e) {
+            $conn->rollBack();
+            throw $e;
+        }
+    }
+
+    // ─── MRP dual-approval gate (Draft → WHSE Admin → System Admin → Procurement) ───
+
+    /** Is this user id a Warehouse Admin approver (MRP gate, step 1)? */
+    public function isWarehouseApprover($userId) {
+        if (!$userId) return false;
+        $stmt = self::getConnection()->prepare(
+            "SELECT is_approver, role FROM users WHERE user_id = :id AND `remove` = 0 AND status = 1"
+        );
+        $stmt->execute(['id' => $userId]);
+        $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+        if (!$row) return false;
+        // whse_admin role auto-passes the gate; legacy is_approver flag still honored.
+        return ($row['role'] ?? '') === 'whse_admin' || (bool) $row['is_approver'];
+    }
+
+    /**
+     * Read-only way for controllers to inspect a requisition before acting.
+     */
+    public function getSupplierOrderStatus($id) {
+        $sql = "SELECT so.*, i.item_code, i.item_description
+                FROM supplier_orders so
+                JOIN items i ON so.item_id = i.item_id
+                WHERE so.supplier_order_id = :id AND so.`remove` = 0";
+        $stmt = self::getConnection()->prepare($sql);
+        $stmt->execute(['id' => $id]);
+        return $stmt->fetch();
+    }
+
+    /**
+     * One approval-gate transition, row-locked so two approvers cannot race:
+     *   step 1 (warehouse admin):  pending_whse_approval      → pending_sysadmin_approval
+     *   step 2 (system admin):     pending_sysadmin_approval  → requested (released)
+     * Throws when the row is gone, not at the expected status, or not an
+     * MRP-generated requisition (mrp_run_id must be set — the gate only
+     * governs drafts born from an MRP run).
+     */
+    public function approveMrpRequisition($id, $currentStatus, $nextStatus, $stageLabel, $approverLabel) {
+        $conn = self::getConnection();
+        $conn->beginTransaction();
+        try {
+            $stmt = $conn->prepare(
+                "SELECT status, mrp_run_id, po_group_id FROM supplier_orders
+                 WHERE supplier_order_id = :id AND `remove` = 0 FOR UPDATE"
+            );
+            $stmt->execute(['id' => $id]);
+            $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+            if (!$row) {
+                throw new \RuntimeException('Requisition not found.');
+            }
+            if ($row['status'] !== $currentStatus) {
+                throw new \RuntimeException(
+                    'Requisition is no longer at the "' . $stageLabel . '" stage — refresh and try again.'
+                );
+            }
+            if (empty($row['mrp_run_id'])) {
+                throw new \RuntimeException('Only MRP-generated requisitions pass through the approval gate.');
+            }
+            // MRP / Purchasing PO separation: processed PO drafts pass the
+            // Purchasing PO gates, never the MRP run gates.
+            if (!empty($row['po_group_id'])) {
+                throw new \RuntimeException(
+                    'This line is a processed Purchasing PO draft — it passes the PO approval gates, not the MRP run gate.'
+                );
+            }
+
+            $upd = $conn->prepare(
+                "UPDATE supplier_orders
+                 SET status = :status, last_update = NOW(),
+                     remarks = CONCAT(remarks, :note)
+                 WHERE supplier_order_id = :id"
+            );
+            $upd->execute([
+                'status' => $nextStatus,
+                'note' => ' [Approval] ' . $stageLabel . ' approved by ' . $approverLabel . ' on ' . date('Y-m-d H:i'),
+                'id' => $id,
+            ]);
+            $conn->commit();
+            return $nextStatus;
+        } catch (\Exception $e) {
+            $conn->rollBack();
+            throw $e;
+        }
+    }
+
+    /**
+     * Rejection at either gate: the draft is cancelled (terminal) with the
+     * reason appended to the remarks trail. Committed MRP stock (qty_allocated)
+     * is NOT released here — releasing stays with MRP History delete,
+     * consistent with cancelPurchasingPo()'s existing behavior.
+     */
+    public function rejectMrpRequisition($id, $currentStatus, $stageLabel, $reason, $approverLabel) {
+        $conn = self::getConnection();
+        $conn->beginTransaction();
+        try {
+            $stmt = $conn->prepare(
+                "SELECT status, po_group_id FROM supplier_orders
+                 WHERE supplier_order_id = :id AND `remove` = 0 FOR UPDATE"
+            );
+            $stmt->execute(['id' => $id]);
+            $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+            if (!$row) {
+                throw new \RuntimeException('Requisition not found.');
+            }
+            if ($row['status'] !== $currentStatus) {
+                throw new \RuntimeException(
+                    'Requisition is no longer at the "' . $stageLabel . '" stage — refresh and try again.'
+                );
+            }
+            // MRP / Purchasing PO separation: processed PO drafts pass the
+            // Purchasing PO gates, never the MRP run gates.
+            if (!empty($row['po_group_id'])) {
+                throw new \RuntimeException(
+                    'This line is a processed Purchasing PO draft — it passes the PO approval gates, not the MRP run gate.'
+                );
+            }
+
+            $upd = $conn->prepare(
+                "UPDATE supplier_orders
+                 SET status = 'cancelled', last_update = NOW(),
+                     remarks = CONCAT(remarks, :note)
+                 WHERE supplier_order_id = :id"
+            );
+            $upd->execute([
+                'note' => ' [Approval] ' . $stageLabel . ' rejected by ' . $approverLabel . ' on ' . date('Y-m-d H:i')
+                        . ' — Reason: ' . ($reason !== '' ? $reason : 'not provided'),
+                'id' => $id,
+            ]);
+            $conn->commit();
+            return 'cancelled';
+        } catch (\Exception $e) {
+            $conn->rollBack();
+            throw $e;
+        }
+    }
+
+    /** Requisitions at an MRP approval stage ('whse' or 'sysadmin').
+     *  The warehouse viewport lists only its own stage; the admin viewport
+     *  lists BOTH draft stages with a computed stage badge, so nothing saved
+     *  for approval ever becomes invisible to the System Admin — rows at the
+     *  earlier stage render read-only ("Awaiting Warehouse Admin"). */
+    public function getMrpApprovalRows($stage) {
+        if ($stage === 'sysadmin') {
+            $sql = "SELECT so.supplier_order_id, so.quantity, so.uom, so.remarks, so.mrp_ref, so.mrp_run_id,
+                           so.date_created, i.item_code, i.item_description, i.item_type,
+                           COALESCE(so.uom,
+                                    (SELECT bi.uom FROM fg_bom_items bi
+                                     JOIN fg_boms b ON b.id = bi.bom_id AND b.status = 'active'
+                                     WHERE bi.item_id = so.item_id
+                                       AND bi.uom IS NOT NULL AND bi.uom <> ''
+                                     ORDER BY bi.id DESC LIMIT 1),
+                                    i.item_uom) AS item_uom,
+                           u.full_name AS created_by_name,
+                           CASE so.status
+                               WHEN 'pending_sysadmin_approval' THEN 'sysadmin'
+                               ELSE 'whse'
+                           END AS gate_stage
+                    FROM supplier_orders so
+                    JOIN items i ON so.item_id = i.item_id
+                    JOIN users u ON so.created_by = u.user_id
+                    WHERE so.`remove` = 0
+                      AND so.status IN ('pending_whse_approval', 'pending_sysadmin_approval')
+                    ORDER BY so.mrp_run_id DESC, so.supplier_order_id ASC";
+            $stmt = self::getConnection()->prepare($sql);
+            $stmt->execute();
+            return $stmt->fetchAll();
+        }
+
+        $sql = "SELECT so.supplier_order_id, so.quantity, so.uom, so.remarks, so.mrp_ref, so.mrp_run_id,
+                       so.date_created, i.item_code, i.item_description, i.item_type,
+                       COALESCE(so.uom,
+                                (SELECT bi.uom FROM fg_bom_items bi
+                                 JOIN fg_boms b ON b.id = bi.bom_id AND b.status = 'active'
+                                 WHERE bi.item_id = so.item_id
+                                   AND bi.uom IS NOT NULL AND bi.uom <> ''
+                                 ORDER BY bi.id DESC LIMIT 1),
+                                i.item_uom) AS item_uom,
+                       u.full_name AS created_by_name,
+                       'whse' AS gate_stage
+                FROM supplier_orders so
+                JOIN items i ON so.item_id = i.item_id
+                JOIN users u ON so.created_by = u.user_id
+                WHERE so.`remove` = 0 AND so.status = 'pending_whse_approval'
+                ORDER BY so.mrp_run_id DESC, so.supplier_order_id ASC";
+        $stmt = self::getConnection()->prepare($sql);
+        $stmt->execute();
+        return $stmt->fetchAll();
+    }
+
+    /** Sidebar badge count: MRP runs (not rows) needing approval at the given stage. */
+    public function getMrpApprovalCount($stage) {
+        $status = $stage === 'sysadmin' ? 'pending_sysadmin_approval'
+                : ($stage === 'qc' ? 'pending_qc_approval' : 'pending_whse_approval');
+        $conn = self::getConnection();
+        $sql = "SELECT COUNT(DISTINCT mrp_run_id) FROM supplier_orders
+                WHERE `remove` = 0 AND status = :status AND mrp_run_id IS NOT NULL";
+        $stmt = $conn->prepare($sql);
+        $stmt->execute(['status' => $status]);
+        $count = (int) $stmt->fetchColumn();
+        // Zero-lacking runs awaiting the same gate (run-level column).
+        $zero = $conn->prepare("SELECT COUNT(*) FROM mrp_runs WHERE approval_status = :status");
+        $zero->execute(['status' => $status]);
+        return $count + (int) $zero->fetchColumn();
+    }
+
+    /**
+     * Sidebar badge count for the admin Approvals hub: every queue a System
+     * Admin must act on. MRP entries count one per RUN (all requisitions of a
+     * run are decided together); other queues count per row.
+     * Extend with new approval-bearing modules as they ship.
+     */
+    public function getAdminApprovalsCount() {
+        $conn = self::getConnection();
+        $count = 0;
+        foreach ([
+            "SELECT COUNT(DISTINCT mrp_run_id) FROM supplier_orders WHERE `remove` = 0 AND status = 'pending_sysadmin_approval' AND mrp_run_id IS NOT NULL",
+            "SELECT COUNT(*) FROM mrp_runs WHERE approval_status = 'pending_sysadmin_approval'",
+            "SELECT COUNT(*) FROM supplier_orders WHERE `remove` = 0 AND status = 'pending_admin_approval'",
+            "SELECT COUNT(*) FROM supplier_orders WHERE `remove` = 0 AND overage_request_status = 'pending'",
+        ] as $sql) {
+            $count += (int) $conn->query($sql)->fetchColumn();
+        }
+        return $count;
+    }
+
+    /**
+     * MRP requisition drafts grouped per saved run for the approval screens:
+     * each entry carries the run header (MRP ref, FG, target qty, timestamp,
+     * preparer) plus its open draft items, so the Warehouse Admin can review
+     * and approve/reject one executive decision per run instead of row soup.
+     */
+    public function getMrpApprovalRuns($stage) {
+        $conn = self::getConnection();
+        $statusByStage = [
+            'sysadmin' => 'pending_sysadmin_approval',
+            'qc'       => 'pending_qc_approval',
+        ];
+        $status = $statusByStage[$stage] ?? 'pending_whse_approval';
+        $statusSet = $conn->quote($status);
+        $sql = "SELECT so.supplier_order_id, so.quantity, so.uom, so.remarks,
+                       so.status, i.item_code, i.item_description,
+                       COALESCE(so.uom,
+                                (SELECT bi.uom FROM fg_bom_items bi
+                                 JOIN fg_boms b ON b.id = bi.bom_id AND b.status = 'active'
+                                 WHERE bi.item_id = so.item_id
+                                   AND bi.uom IS NOT NULL AND bi.uom <> ''
+                                 ORDER BY bi.id DESC LIMIT 1),
+                                i.item_uom) AS item_uom,
+                       mr.run_id, mr.mrp_ref, mr.fg_code, mr.target_qty, mr.customer_id, mr.bom_id,
+                       COALESCE(b.bom_code, mr.fg_code) AS bom_code,
+                       c.customer_name, mr.date_created AS run_date,
+                       ru.full_name AS run_user_name, u.full_name AS created_by_name
+                FROM supplier_orders so
+                JOIN items i ON so.item_id = i.item_id
+                JOIN users u ON so.created_by = u.user_id
+                JOIN mrp_runs mr ON mr.run_id = so.mrp_run_id
+                LEFT JOIN fg_boms b ON b.id = mr.bom_id
+                LEFT JOIN customers c ON mr.customer_id = c.customer_id
+                JOIN users ru ON mr.user_id = ru.user_id
+                WHERE so.`remove` = 0 AND so.status IN ($statusSet)
+                  -- MRP / Purchasing PO separation: run gates list BORN
+                  -- requisitions only. Processed PO drafts (po_group_id set)
+                  -- pass the Purchasing PO gates, never the MRP run gates.
+                  AND so.po_group_id IS NULL
+                ORDER BY mr.date_created DESC, mr.run_id DESC, so.supplier_order_id ASC";
+        $runs = [];
+        foreach ($conn->query($sql)->fetchAll(\PDO::FETCH_ASSOC) as $row) {
+            $runId = (int) $row['run_id'];
+            if (!isset($runs[$runId])) {
+                $runs[$runId] = [
+                    'run_id' => $runId,
+                    'mrp_ref' => $row['mrp_ref'] ?: ('MRP-#' . $runId),
+                    'fg_code' => $row['fg_code'],
+                    'target_qty' => $row['target_qty'],
+                    'bom_id' => $row['bom_id'],
+                    'bom_code' => $row['bom_code'],
+                    'customer_name' => $row['customer_name'],
+                    'run_date' => $row['run_date'],
+                    'run_user_name' => $row['run_user_name'],
+                    'items' => [],
+                    'zero_lacking' => false,
+                ];
+            }
+            $runs[$runId]['items'][] = [
+                'supplier_order_id' => $row['supplier_order_id'],
+                'item_code' => $row['item_code'],
+                'item_description' => $row['item_description'],
+                'quantity' => $row['quantity'],
+                'item_uom' => $row['item_uom'] ?? $row['uom'],
+            ];
+        }
+
+        // Zero-lacking runs: gate progress lives on mrp_runs.approval_status
+        // (they have no requisitions) — surface them at the same stage.
+        $zeroSql = "SELECT mr.run_id, mr.mrp_ref, mr.fg_code, mr.target_qty, mr.bom_id,
+                           COALESCE(b.bom_code, mr.fg_code) AS bom_code,
+                           c.customer_name, mr.date_created AS run_date,
+                           ru.full_name AS run_user_name
+                    FROM mrp_runs mr
+                    LEFT JOIN fg_boms b ON b.id = mr.bom_id
+                    LEFT JOIN customers c ON mr.customer_id = c.customer_id
+                    JOIN users ru ON mr.user_id = ru.user_id
+                    WHERE mr.approval_status = $statusSet
+                    ORDER BY mr.date_created DESC, mr.run_id DESC";
+        foreach ($conn->query($zeroSql)->fetchAll(\PDO::FETCH_ASSOC) as $row) {
+            $runId = (int) $row['run_id'];
+            if (isset($runs[$runId])) continue;   // requisition-bearing run already listed
+            $runs[$runId] = [
+                'run_id' => $runId,
+                'mrp_ref' => $row['mrp_ref'] ?: ('MRP-#' . $runId),
+                'fg_code' => $row['fg_code'],
+                'target_qty' => $row['target_qty'],
+                'bom_id' => $row['bom_id'],
+                'bom_code' => $row['bom_code'],
+                'customer_name' => $row['customer_name'],
+                'run_date' => $row['run_date'],
+                'run_user_name' => $row['run_user_name'],
+                'items' => [],
+                'zero_lacking' => true,
+            ];
+        }
+        return array_values($runs);
+    }
+
+    /**
+     * Peek a run's gate state: non-empty approval_status = zero-lacking run
+     * (header-managed); NULL = requisition-bearing run (row-managed).
+     */
+    public function getMrpRunApprovalStatus($runId) {
+        $stmt = self::getConnection()->prepare(
+            "SELECT approval_status FROM mrp_runs WHERE run_id = :run_id"
+        );
+        $stmt->execute(['run_id' => (int) $runId]);
+        $val = $stmt->fetchColumn();
+        return $val === false ? null : $val;
+    }
+
+    /**
+     * Run-level approval decision. Two gates for EVERY run:
+     *   step 1 (warehouse admin):  pending_whse_approval      → pending_sysadmin_approval
+     *   step 2 (system admin):     pending_sysadmin_approval  → requested (requisitions
+     *                                 released to Procurement + stock reserved) or
+     *                                 approved (zero-lacking runs, stock reserved)
+     * QC Admin no longer gates the run — raw material inspection happens at
+     * Receiving (goods received → QC → stock added). The legacy
+     * pending_qc_approval current-status is still accepted so the data
+     * migration can release runs stranded at the old QC gate.
+     * Requisition-bearing runs flip their open supplier_orders rows (row-locked
+     * on the run header so a concurrent decision on another stage cannot
+     * interleave). Zero-lacking runs (approval_status set on the header) flip
+     * the run-level column instead — no requisitions exist for them.
+     * Returns moved count + run metadata.
+     */
+    public function decideMrpRun($runId, $currentStatus, $newStatus, $approverLabel, $reason = '') {
+        $conn = self::getConnection();
+        $conn->beginTransaction();
+        try {
+            $lock = $conn->prepare(
+                "SELECT run_id, mrp_ref, approval_status FROM mrp_runs WHERE run_id = :run_id FOR UPDATE"
+            );
+            $lock->execute(['run_id' => $runId]);
+            $run = $lock->fetch(\PDO::FETCH_ASSOC);
+            if (!$run) throw new \RuntimeException('MRP run not found.');
+
+            // Zero-lacking run: gates live on the run header, not supplier_orders.
+            if (!empty($run['approval_status'])) {
+                if ($run['approval_status'] !== $currentStatus) {
+                    throw new \RuntimeException('This run is no longer at the awaited approval stage — refresh and try again.');
+                }
+                $conn->prepare(
+                    "UPDATE mrp_runs SET approval_status = :new_status WHERE run_id = :run_id"
+                )->execute(['new_status' => $newStatus, 'run_id' => $runId]);
+
+                // Release gate: the approved plan reserves its materials
+                // (System Admin release, or the legacy QC-gate migration path).
+                if ($newStatus === 'approved'
+                    && in_array($currentStatus, ['pending_sysadmin_approval', 'pending_qc_approval'], true)) {
+                    $this->bookMrpRunAllocation($conn, $runId);
+                }
+
+                $conn->commit();
+                return ['moved' => 0, 'mrp_ref' => $run['mrp_ref'], 'zero_lacking' => true];
+            }
+
+            $upd = $conn->prepare(
+                "UPDATE supplier_orders
+                 SET status = :new_status, last_update = NOW(),
+                     remarks = CONCAT(COALESCE(remarks, ''), CASE WHEN COALESCE(remarks, '') = '' THEN '' ELSE ' | ' END,
+                                      :note)
+                 WHERE mrp_run_id = :run_id AND `remove` = 0 AND status = :current_status
+                   -- MRP / Purchasing PO separation: run gates only ever move
+                   -- BORN requisitions; processed PO drafts (po_group_id set)
+                   -- pass the Purchasing PO gates, never the run gates.
+                   AND po_group_id IS NULL"
+            );
+            $prefix = $newStatus === 'cancelled'
+                ? ' [Approval] Run requisitions rejected by ' . $approverLabel . ' on ' . date('Y-m-d H:i')
+                  . ' — Reason: ' . ($reason !== '' ? $reason : 'not provided')
+                : ' [Approval] Run requisitions approved by ' . $approverLabel . ' on ' . date('Y-m-d H:i');
+            $upd->execute([
+                'new_status' => $newStatus,
+                'note' => $prefix,
+                'run_id' => $runId,
+                'current_status' => $currentStatus,
+            ]);
+            $moved = $upd->rowCount();
+            if ($moved <= 0) {
+                throw new \RuntimeException('No requisitions for this run remain at the awaited stage — refresh and try again.');
+            }
+
+            // Release gate: the run passes both approvals and is released to
+            // Procurement — NOW the frozen requirement turns into an official
+            // reservation: qty_allocated is booked and qty_committed recorded.
+            // (Legacy pending_qc_approval accepted for the data migration.)
+            if ($newStatus === 'requested'
+                && in_array($currentStatus, ['pending_sysadmin_approval', 'pending_qc_approval'], true)) {
+                $this->bookMrpRunAllocation($conn, $runId);
+            }
+            $conn->commit();
+            return ['moved' => $moved, 'mrp_ref' => $run['mrp_ref'], 'zero_lacking' => false];
+        } catch (\Exception $e) {
+            $conn->rollBack();
+            throw $e;
+        }
+    }
+
+    /**
+     * Book the frozen requirement as an official reservation: qty_allocated
+     * += total_reqt per component and qty_committed recorded. Called inside
+     * decideMrpRun's transaction at the RELEASE (System Admin) gate only.
+     * $allowedItemIds restricts reservation to an explicit subset (QC check:
+     * only Approved/Waived components); null reserves every component.
+     */
+    private function bookMrpRunAllocation($conn, $runId, ?array $allowedItemIds = null) {
+        $items = $conn->prepare(
+            "SELECT component_item_id, total_reqt, qty_committed
+             FROM mrp_run_items
+             WHERE run_id = :run_id AND total_reqt > 0
+             ORDER BY id ASC FOR UPDATE"
+        );
+        $items->execute(['run_id' => $runId]);
+        $alloc = $conn->prepare(
+            "INSERT INTO inventory_balances (item_id, site_code, qty_allocated)
+             VALUES (:item_id, :site_code, :qty)
+             ON DUPLICATE KEY UPDATE qty_allocated = qty_allocated + :qty2"
+        );
+        $commit = $conn->prepare(
+            "UPDATE mrp_run_items
+             SET qty_committed = total_reqt
+             WHERE run_id = :run_id AND component_item_id = :item_id AND total_reqt > 0 AND qty_committed = 0"
+        );
+        foreach ($items->fetchAll(\PDO::FETCH_ASSOC) as $item) {
+            if (floatval($item['qty_committed']) > 0) continue;   // already committed earlier
+            $itemId = (int) $item['component_item_id'];
+            if ($allowedItemIds !== null && !in_array($itemId, $allowedItemIds, true)) {
+                continue;   // excluded (e.g. QC-rejected component)
+            }
+            $alloc->execute([
+                'item_id' => $itemId,
+                'site_code' => self::DEFAULT_SITE_CODE,
+                'qty' => floatval($item['total_reqt']),
+                'qty2' => floatval($item['total_reqt']),
+            ]);
+            $commit->execute(['run_id' => $runId, 'item_id' => $itemId]);
+        }
+    }
+
+    /**
+     * Runs the Warehouse Admin already signed, so the decision history is
+     * reviewable: each run shows whether its requisitions still await the
+     * System Admin or were released to Procurement. Terminally received/
+     * cancelled runs are left to MRP History.
+     */
+    public function getMrpWhseDecisionRuns($limit = 20) {
+        $conn = self::getConnection();
+        $sql = "SELECT mr.run_id, mr.mrp_ref, mr.fg_code, mr.target_qty, mr.bom_id, mr.bom_id IS NULL AS no_bom,
+                       b.bom_code, mr.date_created AS run_date, ru.full_name AS run_user_name,
+                       COUNT(so.supplier_order_id) AS item_count,
+                       SUM(CASE WHEN so.status = 'pending_sysadmin_approval' THEN 1 ELSE 0 END) AS st_awaiting_sysadmin,
+                       SUM(CASE WHEN so.status = 'pending_qc_approval' THEN 1 ELSE 0 END) AS st_awaiting_qc,
+                       SUM(CASE WHEN so.status = 'requested' THEN 1 ELSE 0 END) AS st_released
+                FROM supplier_orders so
+                JOIN mrp_runs mr ON mr.run_id = so.mrp_run_id
+                LEFT JOIN fg_boms b ON b.id = mr.bom_id
+                JOIN users ru ON mr.user_id = ru.user_id
+                WHERE so.`remove` = 0
+                  AND so.status IN ('pending_sysadmin_approval', 'pending_qc_approval', 'requested')
+                GROUP BY mr.run_id, mr.mrp_ref, mr.fg_code, mr.target_qty, mr.bom_id, mr.date_created, ru.full_name, b.bom_code
+                HAVING st_awaiting_sysadmin > 0 OR st_awaiting_qc > 0 OR st_released > 0
+                ORDER BY mr.date_created DESC
+                LIMIT :limit";
+        $stmt = $conn->prepare($sql);
+        $stmt->bindValue(':limit', (int) $limit, \PDO::PARAM_INT);
+        $stmt->execute();
+        $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+        foreach ($rows as &$row) {
+            if ((int) $row['st_awaiting_sysadmin'] > 0) {
+                $row['tracking_label'] = 'For Approval (System Admin)';
+                $row['tracking_badge'] = 'bg-info text-dark';
+            } elseif ((int) $row['st_awaiting_qc'] > 0) {
+                $row['tracking_label'] = 'For Approval (QC Admin)';
+                $row['tracking_badge'] = 'bg-primary';
+            } else {
+                $row['tracking_label'] = 'Approved — In Procurement';
+                $row['tracking_badge'] = 'bg-success';
+            }
+        }
+        unset($row);
+
+        // Zero-lacking runs the WHSE Admin signed (gates on the run header).
+        $zeroSql = "SELECT mr.run_id, mr.mrp_ref, mr.fg_code, mr.target_qty, mr.bom_id,
+                           mr.bom_id IS NULL AS no_bom, b.bom_code,
+                           mr.date_created AS run_date, ru.full_name AS run_user_name,
+                           0 AS item_count, 0 AS st_awaiting_sysadmin, 0 AS st_awaiting_qc, 0 AS st_released,
+                           mr.approval_status
+                    FROM mrp_runs mr
+                    LEFT JOIN fg_boms b ON b.id = mr.bom_id
+                    JOIN users ru ON mr.user_id = ru.user_id
+                    WHERE mr.approval_status IN ('pending_sysadmin_approval', 'pending_qc_approval', 'approved', 'cancelled')
+                    ORDER BY mr.date_created DESC
+                    LIMIT :limit2";
+        $zstmt = $conn->prepare($zeroSql);
+        $zstmt->bindValue(':limit2', (int) $limit, \PDO::PARAM_INT);
+        $zstmt->execute();
+        foreach ($zstmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
+            $labels = [
+                'pending_sysadmin_approval' => ['For Approval (System Admin)', 'bg-info text-dark'],
+                'pending_qc_approval'       => ['For Approval (QC Admin)', 'bg-primary'],
+                'approved'                  => ['Approved — No Purchase Requests', 'bg-success'],
+                'cancelled'                 => ['Rejected / Cancelled', 'bg-dark'],
+            ];
+            [$row['tracking_label'], $row['tracking_badge']] = $labels[$row['approval_status']] ?? ['Unknown', 'bg-secondary'];
+            $rows[] = $row;
+        }
+        return $rows;
+    }
+
+    /**
+     * MRP runs the System Admin actually decided (APPROVE/REJECT recorded in
+     * audit_logs with target_type = 'mrp_run'), joined back to the run so the
+     * admin Approvals hub shows the same run-level tracking view as the
+     * warehouse "Runs I Signed" table, with the full review modal available.
+     */
+    public function getMrpSysadminDecisionRuns($limit = 20) {
+        $conn = self::getConnection();
+        $sql = "SELECT al.action AS decision, al.created_at AS decided_at,
+                       mr.run_id, mr.mrp_ref, mr.fg_code, mr.target_qty, mr.bom_id,
+                       mr.bom_id IS NULL AS no_bom, b.bom_code,
+                       mr.date_created AS run_date, ru.full_name AS run_user_name,
+                       COUNT(so.supplier_order_id) AS item_count,
+                       SUM(CASE WHEN so.status = 'requested' THEN 1 ELSE 0 END) AS st_released,
+                       SUM(CASE WHEN so.status = 'cancelled' THEN 1 ELSE 0 END) AS st_cancelled
+                FROM audit_logs al
+                JOIN mrp_runs mr ON mr.run_id = al.target_id
+                LEFT JOIN fg_boms b ON b.id = mr.bom_id
+                JOIN users ru ON ru.user_id = mr.user_id
+                LEFT JOIN supplier_orders so ON so.mrp_run_id = mr.run_id AND so.`remove` = 0
+                WHERE al.department = 'admin'
+                  AND al.action IN ('APPROVE', 'REJECT')
+                  AND al.target_type = 'mrp_run'
+                GROUP BY al.log_id, mr.run_id, mr.mrp_ref, mr.fg_code, mr.target_qty, mr.bom_id,
+                         b.bom_code, mr.date_created, ru.full_name
+                ORDER BY al.created_at DESC
+                LIMIT :limit";
+        $stmt = $conn->prepare($sql);
+        $stmt->bindValue(':limit', (int) $limit, \PDO::PARAM_INT);
+        $stmt->execute();
+        $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+        foreach ($rows as &$row) {
+            if ($row['decision'] === 'REJECT') {
+                $row['tracking_label'] = 'Rejected — Cancelled';
+                $row['tracking_badge'] = 'bg-danger';
+            } elseif ((int) $row['st_released'] > 0) {
+                $row['tracking_label'] = 'Approved — In Procurement';
+                $row['tracking_badge'] = 'bg-success';
+            } else {
+                // SysAdmin signed it: zero-lacking runs complete at this gate
+                // (no purchase requests; QC inspection happens at Receiving only).
+                $row['tracking_label'] = 'Approved — No Purchase Requests';
+                $row['tracking_badge'] = 'bg-success';
+            }
+        }
+        unset($row);
+        return $rows;
+    }
+
+    /**
+     * Runs the QC Admin actually decided (APPROVE/REJECT with department='qc'
+     * on target_type = 'mrp_run') — the "Runs I Checked" table on the QC
+     * MRP Check page.
+     */
+    public function getMrpQcDecisionRuns($limit = 20) {
+        $conn = self::getConnection();
+        $sql = "SELECT al.action AS decision, al.created_at AS decided_at,
+                       mr.run_id, mr.mrp_ref, mr.fg_code, mr.target_qty, mr.bom_id,
+                       mr.bom_id IS NULL AS no_bom, b.bom_code,
+                       mr.date_created AS run_date, ru.full_name AS run_user_name,
+                       mr.approval_status,
+                       (SELECT COUNT(*) FROM supplier_orders so
+                        WHERE so.mrp_run_id = mr.run_id AND so.`remove` = 0) AS item_count
+                FROM audit_logs al
+                JOIN mrp_runs mr ON mr.run_id = al.target_id
+                LEFT JOIN fg_boms b ON b.id = mr.bom_id
+                JOIN users ru ON ru.user_id = mr.user_id
+                WHERE al.department = 'qc'
+                  AND al.action IN ('APPROVE', 'REJECT')
+                  AND al.target_type = 'mrp_run'
+                ORDER BY al.created_at DESC
+                LIMIT :limit";
+        $stmt = $conn->prepare($sql);
+        $stmt->bindValue(':limit', (int) $limit, \PDO::PARAM_INT);
+        $stmt->execute();
+        $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+        foreach ($rows as &$row) {
+            if ($row['decision'] === 'REJECT') {
+                $row['tracking_label'] = 'Rejected — Cancelled';
+                $row['tracking_badge'] = 'bg-danger';
+            } elseif ((int) $row['item_count'] > 0) {
+                $row['tracking_label'] = 'Approved — In Procurement';
+                $row['tracking_badge'] = 'bg-success';
+            } else {
+                $row['tracking_label'] = 'Approved — No Purchase Requests';
+                $row['tracking_badge'] = 'bg-success';
+            }
+        }
+        unset($row);
+        return $rows;
+    }
+
+    /**
+     * Stock commitment guard for the legacy per-row sysadmin approve path:
+     * commits qty_allocated for a run's components only once NO row of the
+     * run remains at either approval stage (i.e., the run is fully released).
+     * Call after each row-level System Admin approval; no-ops until then.
+     */
+    public function commitMrpRunStockIfReleased($runId) {
+        if (!$runId) return 0;
+        $conn = self::getConnection();
+        $conn->beginTransaction();
+        try {
+            $remaining = $conn->prepare(
+                "SELECT COUNT(*) FROM supplier_orders
+                 WHERE mrp_run_id = :run_id AND `remove` = 0
+                   AND status IN ('pending_whse_approval', 'pending_sysadmin_approval', 'pending_qc_approval')"
+            );
+            $remaining->execute(['run_id' => $runId]);
+            if ((int) $remaining->fetchColumn() > 0) {
+                // Some requisitions have not passed the System Admin gate yet.
+                $conn->commit();
+                return 0;
+            }
+            $items = $conn->prepare(
+                "SELECT id, component_item_id, total_reqt, qty_committed
+                 FROM mrp_run_items
+                 WHERE run_id = :run_id AND total_reqt > 0
+                 ORDER BY id ASC FOR UPDATE"
+            );
+            $items->execute(['run_id' => $runId]);
+            $alloc = $conn->prepare(
+                "INSERT INTO inventory_balances (item_id, site_code, qty_allocated)
+                 VALUES (:item_id, :site_code, :qty)
+                 ON DUPLICATE KEY UPDATE qty_allocated = qty_allocated + :qty2"
+            );
+            $committedCount = 0;
+            foreach ($items->fetchAll(\PDO::FETCH_ASSOC) as $item) {
+                if (floatval($item['qty_committed']) > 0) continue;
+                $alloc->execute([
+                    'item_id' => (int) $item['component_item_id'],
+                    'site_code' => self::DEFAULT_SITE_CODE,
+                    'qty' => floatval($item['total_reqt']),
+                    'qty2' => floatval($item['total_reqt']),
+                ]);
+                $committedCount++;
+            }
+            $conn->prepare(
+                "UPDATE mrp_run_items
+                 SET qty_committed = total_reqt
+                 WHERE run_id = :run_id AND total_reqt > 0 AND qty_committed = 0"
+            )->execute(['run_id' => $runId]);
+            $conn->commit();
+            return $committedCount;
+        } catch (\Exception $e) {
+            $conn->rollBack();
+            throw $e;
+        }
+    }
+
+    // ─── Receiving overage guardrails (System Admin approval) ────────────────
+    // Under / partial receipts pass straight through to QC. Over-receipts
+    // (received qty beyond the ordered total) are blocked at receiving until
+    // the System Admin approves the overage amount (step: warehouse submits
+    // the shipment → request stored pending → admin approves → warehouse
+    // retried within the approved cap → straight to QC).
+
+    /**
+     * Record/refresh a pending overage request for a supplier order: the
+     * cumulative received total (IQ received + this shipment - ordered).
+     * Kept even while another request is pending (the newest shipment size
+     * wins) so warehouse never needs two flows for one line.
+     */
+    public function requestOverageApproval($id, $requestedOverQty) {
+        $conn = self::getConnection();
+        $conn->beginTransaction();
+        try {
+            $stmt = $conn->prepare(
+                "SELECT status FROM supplier_orders
+                 WHERE supplier_order_id = :id AND `remove` = 0 FOR UPDATE"
+            );
+            $stmt->execute(['id' => $id]);
+            $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+            if (!$row) throw new \RuntimeException('Requisition not found.');
+            if (in_array($row['status'], ['cancelled', 'rejected', 'received'], true)) {
+                throw new \RuntimeException('Cannot request overage approval for a closed/rejected order.');
+            }
+            $conn->prepare(
+                "UPDATE supplier_orders
+                 SET overage_request_qty = :qty,
+                     overage_request_status = 'pending',
+                     last_update = NOW()
+                 WHERE supplier_order_id = :id"
+            )->execute(['qty' => $requestedOverQty, 'id' => $id]);
+            $conn->commit();
+            return true;
+        } catch (\Exception $e) {
+            $conn->rollBack();
+            throw $e;
+        }
+    }
+
+    /** Pending overage approvals for the System Admin gate list. */
+    public function getPendingOverageApprovals() {
+        $sql = "SELECT so.supplier_order_id, so.quantity, COALESCE(so.received_qty, 0) AS received_qty,
+                       so.overage_request_qty, so.item_id, i.item_code, i.item_description,
+                       i.item_uom, so.supplier_name, so.po_ref, so.mrp_ref
+                FROM supplier_orders so
+                JOIN items i ON so.item_id = i.item_id
+                WHERE so.`remove` = 0 AND so.overage_request_status = 'pending'
+                ORDER BY so.supplier_order_id ASC";
+        return self::getConnection()->query($sql)->fetchAll();
+    }
+
+    /** System Admin approval of a pending overage request. */
+    public function approveOverageRequest($id, $approverLabel) {
+        $conn = self::getConnection();
+        $conn->beginTransaction();
+        try {
+            $stmt = $conn->prepare(
+                "SELECT overage_request_qty, overage_request_status, item_id, quantity FROM supplier_orders
+                 WHERE supplier_order_id = :id AND `remove` = 0 FOR UPDATE"
+            );
+            $stmt->execute(['id' => $id]);
+            $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+            if (!$row) throw new \RuntimeException('Requisition not found.');
+            if ($row['overage_request_status'] !== 'pending') {
+                throw new \RuntimeException(
+                    'This overage request is no longer pending (current state: ' .
+                    ($row['overage_request_status'] ?: 'none') . '). Refresh and try again.'
+                );
+            }
+            if (floatval($row['overage_request_qty'] ?? 0) <= 0) {
+                throw new \RuntimeException('No overage quantity is attached to this request.');
+            }
+            $conn->prepare(
+                "UPDATE supplier_orders
+                 SET overage_request_status = 'approved',
+                     overage_approved_qty = overage_request_qty,
+                     remarks = CONCAT(COALESCE(remarks, ''), CASE WHEN COALESCE(remarks, '') = '' THEN '' ELSE ' | ' END,
+                                      ' [Overage] Approved +', overage_request_qty, ' beyond ordered by ', :approver, ' on ', NOW()),
+                     last_update = NOW()
+                 WHERE supplier_order_id = :id"
+            )->execute(['id' => $id, 'approver' => $approverLabel]);
+            $conn->commit();
+            return floatval($row['overage_request_qty']);
+        } catch (\Exception $e) {
+            $conn->rollBack();
+            throw $e;
+        }
+    }
+
+    /** System Admin rejection of a pending overage request. */
+    public function rejectOverageRequest($id, $reason, $approverLabel) {
+        $conn = self::getConnection();
+        $conn->beginTransaction();
+        try {
+            $stmt = $conn->prepare(
+                "SELECT overage_request_qty, overage_request_status FROM supplier_orders
+                 WHERE supplier_order_id = :id AND `remove` = 0 FOR UPDATE"
+            );
+            $stmt->execute(['id' => $id]);
+            $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+            if (!$row) throw new \RuntimeException('Requisition not found.');
+            if ($row['overage_request_status'] !== 'pending') {
+                throw new \RuntimeException(
+                    'This overage request is no longer pending (current state: ' .
+                    ($row['overage_request_status'] ?: 'none') . '). Refresh and try again.'
+                );
+            }
+            $conn->prepare(
+                "UPDATE supplier_orders
+                 SET overage_request_status = 'rejected',
+                     remarks = CONCAT(COALESCE(remarks, ''), CASE WHEN COALESCE(remarks, '') = '' THEN '' ELSE ' | ' END,
+                                      ' [Overage] Rejected (', overage_request_qty, ' beyond ordered) by ', :approver, ' on ', NOW(),
+                                      ' — Reason: ', :reason),
+                     last_update = NOW()
+                 WHERE supplier_order_id = :id"
+            )->execute(['id' => $id, 'approver' => $approverLabel, 'reason' => $reason !== '' ? $reason : 'not provided']);
+            $conn->commit();
+            return floatval($row['overage_request_qty']);
+        } catch (\Exception $e) {
+            $conn->rollBack();
+            throw $e;
+        }
+    }
+
+    // ─── Purchasing PO Admin Approval Gate (Processed drafts) ─────────────────
+    // When Procurement processes requested items into POs the resulting row is
+    // a draft (pending_admin_approval). System Admin approval — and only that
+    // (no Warehouse Admin step here) — flips it to the Active 'pending' status
+    // that Receiving works from.
+
+    /** System Admin approval of a processed PO draft. Returns the order info. */
+    public function approvePurchaseOrderDraft($id, $approverLabel) {
+        $conn = self::getConnection();
+        $conn->beginTransaction();
+        try {
+            $stmt = $conn->prepare(
+                "SELECT status FROM supplier_orders
+                 WHERE supplier_order_id = :id AND `remove` = 0 FOR UPDATE"
+            );
+            $stmt->execute(['id' => $id]);
+            $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+            if (!$row) throw new \RuntimeException('Purchasing PO not found.');
+            if ($row['status'] !== 'pending_admin_approval') {
+                throw new \RuntimeException('This PO is not awaiting System Admin approval (current status: '
+                    . ($row['status'] ?: 'unknown') . '). Refresh and try again.');
+            }
+            $conn->prepare(
+                "UPDATE supplier_orders
+                 SET status = 'pending', last_update = NOW(),
+                     remarks = CONCAT(COALESCE(remarks, ''), CASE WHEN COALESCE(remarks, '') = '' THEN '' ELSE ' | ' END,
+                                      ' [Approval] PO draft approved by ', :approver, ' on ', NOW())
+                 WHERE supplier_order_id = :id"
+            )->execute(['id' => $id, 'approver' => $approverLabel]);
+            $conn->commit();
+            return 'pending';
+        } catch (\Exception $e) {
+            $conn->rollBack();
+            throw $e;
+        }
+    }
+
+    /** System Admin rejection of a processed PO draft (cancelled with reason). */
+    public function rejectPurchaseOrderDraft($id, $reason, $approverLabel) {
+        $conn = self::getConnection();
+        $conn->beginTransaction();
+        try {
+            $stmt = $conn->prepare(
+                "SELECT status FROM supplier_orders
+                 WHERE supplier_order_id = :id AND `remove` = 0 FOR UPDATE"
+            );
+            $stmt->execute(['id' => $id]);
+            $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+            if (!$row) throw new \RuntimeException('Purchasing PO not found.');
+            if ($row['status'] !== 'pending_admin_approval') {
+                throw new \RuntimeException('This PO is not awaiting System Admin approval (current status: '
+                    . ($row['status'] ?: 'unknown') . '). Refresh and try again.');
+            }
+            $conn->prepare(
+                "UPDATE supplier_orders
+                 SET status = 'cancelled', last_update = NOW(),
+                     remarks = CONCAT(COALESCE(remarks, ''), CASE WHEN COALESCE(remarks, '') = '' THEN '' ELSE ' | ' END,
+                                      ' [Approval] PO draft rejected by ', :approver, ' on ', NOW(),
+                                      ' — Reason: ', :reason),
+                     last_update = NOW()
+                 WHERE supplier_order_id = :id"
+            )->execute(['id' => $id, 'approver' => $approverLabel, 'reason' => $reason !== '' ? $reason : 'not provided']);
+            $conn->commit();
+            return 'cancelled';
+        } catch (\Exception $e) {
+            $conn->rollBack();
+            throw $e;
+        }
     }
 
     /**
@@ -4059,11 +5348,11 @@ public function searchItems($query) {
             if (count($rows) !== count($ids)) {
                 throw new \RuntimeException('One or more selected orders were not found or have been deleted.');
             }
-            foreach ($rows as $row) {
-                if (!in_array($row['status'], ['requested', 'pending'])) {
-                    throw new \RuntimeException("Order #{$row['supplier_order_id']} is no longer in Requested/Pending status. Please refresh and try again.");
-                }
+          foreach ($rows as $row) {
+            if (!in_array($row['status'], ['requested', 'pending_whse_approval', 'pending_admin_approval'])) {
+                throw new \RuntimeException("Order #{$row['supplier_order_id']} is not in Requested / Pending WHSE Approval / Pending Admin Approval status. Please refresh and try again.");
             }
+        }
 
             // Validation: every selected row must be the SAME item code.
             $codes = [];
@@ -4108,6 +5397,8 @@ public function searchItems($query) {
                   . ($mrpRefs ? ' | MRP refs: ' . implode(', ', $mrpRefs) : '');
 
             // Survivor: the summed PO draft (order_date kept when not posted).
+            // Enters the WHSE Admin gate first; po_group_id = self marks it as
+            // a processed PO draft (not a born run requisition).
             $conn->prepare(
                 "UPDATE supplier_orders
                  SET supplier_name = :supplier_name,
@@ -4115,7 +5406,8 @@ public function searchItems($query) {
                      unit_cost = :unit_cost,
                      order_date = COALESCE(:order_date, order_date),
                      expected_date = :expected_date,
-                     status = 'pending',
+                     status = 'pending_whse_approval',
+                     po_group_id = COALESCE(po_group_id, :group_id),
                      mrp_ref = COALESCE(:mrp_ref, mrp_ref),
                      remarks = CONCAT(COALESCE(remarks, ''), CASE WHEN COALESCE(remarks, '') = '' THEN '' ELSE ' | ' END, :note),
                      last_update = NOW()
@@ -4126,6 +5418,7 @@ public function searchItems($query) {
                 'unit_cost' => $data['unit_cost'],
                 'order_date' => $data['order_date'] ?? null,
                 'expected_date' => $data['expected_date'] ?? null,
+                'group_id' => $survivorId,
                 'mrp_ref' => $mergedRef,
                 'note' => $note,
                 'id' => $survivorId,
@@ -4253,7 +5546,8 @@ public function searchItems($query) {
     public function getReceivingTabCounts() {
         $conn = self::getConnection();
         $sql = "SELECT status, COUNT(*) AS c FROM supplier_orders
-                WHERE `remove` = 0 AND status <> 'requested'
+                WHERE `remove` = 0
+                  AND status NOT IN ('requested', 'pending_whse_approval', 'pending_sysadmin_approval', 'pending_qc_approval', 'pending_admin_approval')
                 GROUP BY status";
         $byStatus = [];
         $all = 0;
@@ -4278,7 +5572,7 @@ public function searchItems($query) {
         // uninspected (PENDING_QC) batch.
         $inspectionCount = (int) $conn->query(
             "SELECT COUNT(*) FROM supplier_orders so
-             WHERE so.`remove` = 0 AND so.status NOT IN ('requested', 'received', 'rejected', 'cancelled')
+             WHERE so.`remove` = 0 AND so.status NOT IN ('requested', 'pending_whse_approval', 'pending_sysadmin_approval', 'pending_qc_approval', 'pending_admin_approval', 'received', 'rejected', 'cancelled')
                AND (so.status = 'For Inspection' OR EXISTS (
                    SELECT 1 FROM receiving_items rix
                    WHERE rix.supplier_order_id = so.supplier_order_id AND rix.qc_status = 'PENDING_QC'))"
@@ -4293,9 +5587,11 @@ public function searchItems($query) {
 
     public function getReceivingPoFiltered($filters = []) {
         // Receiving never lists requisitions: procurement owns those until they
-        // are processed into supplier orders. Excluded for every tab and for the
-        // status dropdown alike.
-        $where = ["so.`remove` = 0", "so.status <> 'requested'"];
+        // are processed into supplier orders. Unreleased approval drafts are
+        // likewise invisible here (warehouse/admin gate them in Purchasing PO).
+        // Excluded for every tab and for the status dropdown alike.
+        $where = ["so.`remove` = 0",
+                  "so.status NOT IN ('requested', 'pending_whse_approval', 'pending_sysadmin_approval', 'pending_qc_approval', 'pending_admin_approval')"];
         $params = [];
 
         // Exact status (dropdown) overrides the tab group.
@@ -4394,18 +5690,25 @@ public function searchItems($query) {
             $orderedQty = floatval($order['quantity']);
             $newReceivedQty = $currentReceived + $receivedQty;
 
-            // Server-side guard: never receive more than ordered.
+            // Server-side guard: exact / partial receipts (<= ordered) pass
+            // straight through. Receiving beyond the ordered total is allowed
+            // only within an approved overage (overage_request_status =
+            // 'approved' caps the excess at overage_approved_qty).
             if ($receivedQty <= 0) {
                 throw new \RuntimeException('Received quantity must be greater than zero.');
             }
             $remaining = $orderedQty - $currentReceived;
-            if ($newReceivedQty > $orderedQty + 0.0001) {
+            $hasApprovedOver = (string) ($order['overage_request_status'] ?? '') === 'approved';
+            $approvedOver = $hasApprovedOver ? floatval($order['overage_approved_qty'] ?? 0) : 0.0;
+            $receivingCap = $orderedQty + $approvedOver;
+            if ($newReceivedQty > $receivingCap + 0.0001) {
                 throw new \RuntimeException(
-                    'Cannot receive ' . formatQty($receivedQty) . ' â€” only ' .
-                    formatQty(max($remaining, 0)) . ' remaining of ' . formatQty($orderedQty) . '.'
+                    'Cannot receive ' . formatQty($receivedQty) . ' — only ' .
+                    formatQty(max($remaining + $approvedOver, 0)) . ' remaining (ordered ' .
+                    formatQty($orderedQty) . ($approvedOver > 0 ? ' + approved overage ' . formatQty($approvedOver) : '') .
+                    '). Receipts beyond the ordered quantity require System Admin overage approval.'
                 );
             }
-
             // Resolve PO ref up front (used for staging + duplicate check).
             // receiving_items.po_ref (NOT NULL) takes the explicit po_ref entered
             // by procurement; only when left blank fall back to the internal id
@@ -4547,7 +5850,8 @@ public function searchItems($query) {
         $conn->beginTransaction();
         try {
             $stmt = $conn->prepare(
-                "SELECT ri.*, so.quantity AS ordered_total, so.received_qty AS cumulative_received, so.item_id
+                "SELECT ri.*, so.quantity AS ordered_total, so.received_qty AS cumulative_received, so.item_id,
+                        so.overage_request_status, so.overage_approved_qty
                  FROM receiving_items ri
                  JOIN supplier_orders so ON so.supplier_order_id = ri.supplier_order_id
                  WHERE ri.id = :id FOR UPDATE"
@@ -4566,12 +5870,17 @@ public function searchItems($query) {
             if ($newQty <= 0) {
                 throw new \RuntimeException('Received quantity must be greater than zero.');
             }
-            // Cumulative received excluding this batch must still fit the order.
+            // Cumulative received excluding this batch must fit the ordered
+            // total, plus any System Admin approved overage.
             $otherReceived = floatval($row['cumulative_received']) - $oldQty;
-            if ($otherReceived + $newQty > floatval($row['ordered_total']) + 0.0001) {
+            $stagingCap = floatval($row['ordered_total'])
+                + ((string) ($row['overage_request_status'] ?? '') === 'approved'
+                    ? floatval($row['overage_approved_qty'] ?? 0) : 0.0);
+            if ($otherReceived + $newQty > $stagingCap + 0.0001) {
                 throw new \RuntimeException(
-                    'Received quantity cannot exceed the ordered total of ' .
-                    formatQty(floatval($row['ordered_total'])) . '.'
+                    'Received quantity cannot exceed the receiving limit of ' .
+                    formatQty($stagingCap) . ' (ordered ' . formatQty(floatval($row['ordered_total'])) .
+                    ' incl. any approved overage).'
                 );
             }
 
@@ -4736,9 +6045,14 @@ public function searchItems($query) {
             // The prompt modal only previews this number â€” $customRef is ignored.
             $mrpRef = $this->generateNextMrpRef($conn, true);
 
+            // Zero-lacking runs have no requisitions, so their gate progress
+            // lives on the run header (approval_status) instead of
+            // supplier_orders — they still pass all three approval gates.
+            $runApprovalStatus = empty($lacking) ? 'pending_whse_approval' : null;
+
             $conn->prepare(
-                "INSERT INTO mrp_runs (po_id, customer_id, user_id, fg_item_id, bom_id, fg_code, target_qty, mrp_ref)
-                 VALUES (NULL, :customer_id, :user_id, :fg_item_id, :bom_id, :fg_code, :target_qty, :mrp_ref)"
+                "INSERT INTO mrp_runs (po_id, customer_id, user_id, fg_item_id, bom_id, fg_code, target_qty, mrp_ref, approval_status)
+                 VALUES (NULL, :customer_id, :user_id, :fg_item_id, :bom_id, :fg_code, :target_qty, :mrp_ref, :approval_status)"
             )->execute([
                 'customer_id' => $customerId > 0 ? $customerId : null,
                 'user_id' => $userId,
@@ -4747,6 +6061,7 @@ public function searchItems($query) {
                 'fg_code' => $fgCode,
                 'target_qty' => $targetQty,
                 'mrp_ref' => $mrpRef,
+                'approval_status' => $runApprovalStatus,
             ]);
             $runId = (int) $conn->lastInsertId();
 
@@ -4756,18 +6071,14 @@ public function searchItems($query) {
                      pending, excess, remarks, qty_committed)
                  VALUES
                     (:run_id, :fg_item_id, :component_item_id, :total_reqt, :soh, :allocated,
-                     :pending, :excess, :remarks, :qty_committed)"
-            );
-            // ALLOCATED on the Item Master comes from view_inventory_status, which
-            // sums inventory_balances.qty_allocated â€” so committed stock is booked
-            // there (qty_on_hand / qty_for_inspect are never touched here).
-            $allocStmt = $conn->prepare(
-                "INSERT INTO inventory_balances (item_id, site_code, qty_allocated)
-                 VALUES (:item_id, :site_code, :qty)
-                 ON DUPLICATE KEY UPDATE qty_allocated = qty_allocated + :qty2"
+                     :pending, :excess, :remarks, 0)"
             );
 
-            $committed = 0;
+            // FROZEN: a run still in For Approval is only a drafted calculation —
+            // qty_committed = 0 and inventory_balances.qty_allocated is untouched, so
+            // ALLOCATED totals and Pending PO / RR never see unapproved runs. Stock is
+            // committed (qty_committed = total_reqt) by decideMrpRun() when the System
+            // Admin finally releases the run to Procurement.
             foreach ($rows as $row) {
                 $itemId = (int) $row['component_item_id'];
                 $required = floatval($row['required']);
@@ -4800,22 +6111,18 @@ public function searchItems($query) {
                     'pending' => $pendingPoRr,
                     'excess' => $excess,
                     'remarks' => $remarks,
-                    'qty_committed' => max(0, $required),
                 ]);
-
-                if ($required > 0) {
-                    $allocStmt->execute(['item_id' => $itemId, 'site_code' => self::DEFAULT_SITE_CODE, 'qty' => $required, 'qty2' => $required]);
-                    $committed++;
-                }
             }
 
             // Purchase requests for lacking items: every MRP run INSERTs its
-            // own distinct Requested row â€” requisitions from earlier runs (and
-            // procurement's own) are never UPDATEd or deleted here, so each
-            // snapshot keeps its own requisition trail. Rows are tagged with
-            // this run id (mrp_run_id + mrp_ref + the legacy remarks format)
-            // so deleteMrpRun() finds them and the Purchasing table shows the
-            // MRP origin.
+            // own distinct draft row (pending_whse_approval) — quantities push
+            // to Procurement only after BOTH approval gates (warehouse admin,
+            // then system admin) flip the status to 'requested'. Earlier
+            // requisitions (and procurement's own) are never UPDATEd or
+            // deleted here, so each snapshot keeps its own requisition trail.
+            // Rows are tagged with this run id (mrp_run_id + mrp_ref + the
+            // legacy remarks format) so deleteMrpRun() finds them and the
+            // Purchasing table shows the MRP origin.
             $queued = 0;
             foreach ($lacking as $itemId => $target) {
                 $this->createSupplierOrder([
@@ -4828,7 +6135,7 @@ public function searchItems($query) {
                     'expected_date' => null,
                     'remarks' => 'Auto-generated from MRP Run #' . $runId,
                     'created_by' => $userId,
-                    'status' => 'requested',
+                    'status' => 'pending_whse_approval',
                     'po_id' => null,
                     'mrp_run_id' => $runId,
                     'mrp_ref' => $mrpRef,
@@ -4840,8 +6147,9 @@ public function searchItems($query) {
             return [
                 'run_id' => $runId,
                 'queued' => $queued,
-                'committed' => $committed,
+                'committed' => 0,
                 'mrp_ref' => $mrpRef,
+                'zero_lacking' => empty($lacking),
             ];
         } catch (\Exception $e) {
             $conn->rollBack();
@@ -4857,7 +6165,7 @@ public function searchItems($query) {
                 ORDER BY mr.date_created DESC";
         $stmt = self::getConnection()->prepare($sql);
         $stmt->execute(['po_id' => $po_id]);
-        return $stmt->fetchAll();
+        return $this->deriveMrpRunStatuses($stmt->fetchAll());
     }
 
     /**
@@ -4878,7 +6186,7 @@ public function searchItems($query) {
                        mri.excess, mri.remarks, mri.qty_committed,
                        i.item_code AS fg_code, i.item_description AS fg_name,
                        ic.item_code AS component_code, ic.item_description AS component_name,
-                       ic.item_uom AS component_uom
+                       ic.item_uom AS component_uom, ic.item_type AS component_type
                 FROM mrp_run_items mri
                 JOIN items i ON mri.fg_item_id = i.item_id
                 JOIN items ic ON mri.component_item_id = ic.item_id
@@ -4914,6 +6222,228 @@ public function searchItems($query) {
     }
 
     /**
+     * MRP Check items modal data: every frozen component of the run joined to
+     * its latest Raw Material Analysis Report (if any) and its requisition
+     * (if any) so the QC Admin can inspect and track per-item progress.
+     */
+    public function getMrpRunQcItems($runId) {
+        $conn = self::getConnection();
+        $items = $this->getMrpRunItems($runId);
+        $latestReports = [];
+        $stmt = $conn->prepare(
+            "SELECT car.* FROM qc_analysis_reports car
+             WHERE car.run_id = :run_id
+               AND car.report_id = (
+                   SELECT car2.report_id FROM qc_analysis_reports car2
+                   WHERE car2.run_id = car.run_id AND car2.component_item_id = car.component_item_id
+                   ORDER BY car2.date_inspected DESC, car2.report_id DESC LIMIT 1
+               )"
+        );
+        $stmt->execute(['run_id' => (int) $runId]);
+        foreach ($stmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
+            $latestReports[(int) $row['component_item_id']] = $row;
+        }
+        $requisitions = [];
+        foreach ($this->getLinkedSupplierOrdersForRun($runId) as $order) {
+            $requisitions[(int) $order['item_id']] = $order;
+        }
+
+        // Items whose stock already passed Receiving Inspection — their RM was
+        // quality-approved there, so the MRP Check needs no new report for them.
+        $approvedFromReceiving = [];
+        $componentIds = array_map('intval', array_column($items, 'component_item_id'));
+        if ($componentIds) {
+            $placeholders = implode(',', array_fill(0, count($componentIds), '?'));
+            $apStmt = $conn->prepare(
+                "SELECT i.item_id, MAX(ri.received_date) AS last_passed_date
+                 FROM receiving_items ri
+                 JOIN items i ON ri.item_code = i.item_code
+                 WHERE ri.qc_status = 'PASSED' AND i.item_id IN ($placeholders)
+                 GROUP BY i.item_id"
+            );
+            $apStmt->execute($componentIds);
+            foreach ($apStmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
+                $approvedFromReceiving[(int) $row['item_id']] = $row['last_passed_date'];
+            }
+        }
+
+        foreach ($items as &$item) {
+            $itemId = (int) $item['component_item_id'];
+            $report = $latestReports[$itemId] ?? null;
+            $item['disposition'] = $report['disposition'] ?? null;
+            $item['latest_report_id'] = $report['report_id'] ?? null;
+            $item['inspected_at'] = $report['date_inspected'] ?? null;
+            // No run-level report yet, but the RM already passed Receiving
+            // Inspection → the MRP Check skips the analysis report for it.
+            $item['already_qc_approved'] = $report === null && isset($approvedFromReceiving[$itemId]);
+            $item['last_qc_passed_date'] = $approvedFromReceiving[$itemId] ?? null;
+            // Not lacking (frozen excess >= 0) → no purchase request exists for
+            // this component → nothing for QC to decide, no report needed.
+            $item['no_po_needed'] = $report === null && floatval($item['excess'] ?? 0) >= 0;
+            $item['requisition_status'] = $requisitions[$itemId]['status'] ?? null;
+            $item['supplier_order_id'] = $requisitions[$itemId]['supplier_order_id'] ?? null;
+        }
+        unset($item);
+        return $items;
+    }
+
+    /**
+     * Auto-complete the QC gate once every component of the run carries a
+     * final disposition (APPROVED / WAIVED / REJECTED — HOLD and uninspected
+     * keep the run open):
+     *   - Approved/Waived requisitions  → released ('requested')
+     *   - Rejected requisitions         → cancelled with a [QC] note
+     *   - Zero-lacking runs             → approval_status 'approved'
+     *   - Stock reserved only for Approved/Waived components
+     * Components with no run-level report are auto-approved when EITHER:
+     *   (a) their stock already PASSED Receiving Inspection, or
+     *   (b) they are not lacking (frozen excess >= 0) → no purchase request
+     *       exists, so there is nothing for QC to decide (No PO Needed).
+     * Returns ['complete' => bool, released, cancelled, reserved items, ...].
+     */
+    public function completeMrpRunCheck($runId) {
+        $conn = self::getConnection();
+        $conn->beginTransaction();
+        try {
+            $lock = $conn->prepare(
+                "SELECT run_id, mrp_ref, approval_status FROM mrp_runs WHERE run_id = :run_id FOR UPDATE"
+            );
+            $lock->execute(['run_id' => (int) $runId]);
+            $run = $lock->fetch(\PDO::FETCH_ASSOC);
+            if (!$run) throw new \RuntimeException('MRP run not found.');
+
+            // Latest disposition per component.
+            $stmt = $conn->prepare(
+                "SELECT component_item_id, disposition, report_id FROM qc_analysis_reports
+                 WHERE run_id = :run_id
+                 ORDER BY date_inspected ASC, report_id ASC"
+            );
+            $stmt->execute(['run_id' => (int) $runId]);
+            $latest = [];
+            foreach ($stmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
+                $latest[(int) $row['component_item_id']] = $row['disposition'];
+            }
+
+            $allItems = $conn->prepare(
+                "SELECT component_item_id, excess FROM mrp_run_items WHERE run_id = :run_id"
+            );
+            $allItems->execute(['run_id' => (int) $runId]);
+            $frozenExcess = [];
+            foreach ($allItems->fetchAll(\PDO::FETCH_ASSOC) as $row) {
+                $frozenExcess[(int) $row['component_item_id']] = floatval($row['excess']);
+            }
+            $componentIds = array_keys($frozenExcess);
+
+            // Components without a run report whose stock already passed
+            // Receiving Inspection — auto-approved, no report needed.
+            $approvedFromReceiving = [];
+            $unreported = [];
+            foreach ($componentIds as $cid) {
+                if (!isset($latest[$cid])) $unreported[] = $cid;
+            }
+            if ($unreported) {
+                $placeholders = implode(',', array_fill(0, count($unreported), '?'));
+                $apStmt = $conn->prepare(
+                    "SELECT DISTINCT i.item_id
+                     FROM receiving_items ri
+                     JOIN items i ON ri.item_code = i.item_code
+                     WHERE ri.qc_status = 'PASSED' AND i.item_id IN ($placeholders)"
+                );
+                $apStmt->execute($unreported);
+                foreach ($apStmt->fetchAll(\PDO::FETCH_COLUMN) as $aid) {
+                    $approvedFromReceiving[(int) $aid] = true;
+                }
+            }
+
+            $final = ['APPROVED', 'WAIVED', 'REJECTED'];
+            $approvedIds = [];
+            $rejectedIds = [];
+            foreach ($componentIds as $cid) {
+                $disp = $latest[$cid] ?? null;
+                if ($disp === null && isset($approvedFromReceiving[$cid])) {
+                    $disp = 'APPROVED';   // quality-approved at Receiving Inspection
+                }
+                if ($disp === null && $frozenExcess[$cid] >= 0) {
+                    // Not lacking → no purchase request exists → nothing to
+                    // decide (No PO Needed) → counts as approved.
+                    $disp = 'APPROVED';
+                }
+                if ($disp === null || !in_array($disp, $final, true)) {
+                    $conn->rollBack();
+                    return ['complete' => false];
+                }
+                if ($disp === 'REJECTED') {
+                    $rejectedIds[] = $cid;
+                } else {
+                    $approvedIds[] = $cid;
+                }
+            }
+
+            $approverLabel = ($_SESSION['full_name'] ?? $_SESSION['username'] ?? 'QC') . ' (qc)';
+
+            // Requisition-bearing runs: per-item release / cancel.
+            $released = 0;
+            $cancelled = 0;
+            if (empty($run['approval_status'])) {
+                foreach ($approvedIds as $cid) {
+                    $upd = $conn->prepare(
+                        "UPDATE supplier_orders SET status = 'requested', last_update = NOW(),
+                             remarks = CONCAT(COALESCE(remarks, ''), CASE WHEN COALESCE(remarks,'') = '' THEN '' ELSE ' | ' END, :note)
+                         WHERE mrp_run_id = :run_id AND item_id = :item_id AND `remove` = 0
+                           AND status = 'pending_qc_approval'"
+                    );
+                    $upd->execute([
+                        'run_id' => (int) $runId,
+                        'item_id' => $cid,
+                        'note' => ' [QC] Released after Raw Material Analysis — Approved/Waived by ' . $approverLabel . ' on ' . date('Y-m-d H:i'),
+                    ]);
+                    $released += $upd->rowCount();
+                }
+                foreach ($rejectedIds as $cid) {
+                    $upd = $conn->prepare(
+                        "UPDATE supplier_orders SET status = 'cancelled', last_update = NOW(),
+                             remarks = CONCAT(COALESCE(remarks, ''), CASE WHEN COALESCE(remarks,'') = '' THEN '' ELSE ' | ' END, :note)
+                         WHERE mrp_run_id = :run_id AND item_id = :item_id AND `remove` = 0
+                           AND status = 'pending_qc_approval'"
+                    );
+                    $upd->execute([
+                        'run_id' => (int) $runId,
+                        'item_id' => $cid,
+                        'note' => ' [QC] Rejected at Raw Material Analysis by ' . $approverLabel . ' on ' . date('Y-m-d H:i'),
+                    ]);
+                    $cancelled += $upd->rowCount();
+                }
+            }
+
+            // Reserve stock for Approved/Waived components only.
+            if (!empty($approvedIds)) {
+                $this->bookMrpRunAllocation($conn, $runId, $approvedIds);
+            }
+            $reserved = count($approvedIds);
+
+            // Zero-lacking runs complete on the run header.
+            if (!empty($run['approval_status'])) {
+                $conn->prepare(
+                    "UPDATE mrp_runs SET approval_status = 'approved' WHERE run_id = :run_id"
+                )->execute(['run_id' => (int) $runId]);
+            }
+
+            $conn->commit();
+            return [
+                'complete' => true,
+                'mrp_ref' => $run['mrp_ref'],
+                'released' => $released,
+                'cancelled' => $cancelled,
+                'reserved' => $reserved,
+                'zero_lacking' => !empty($run['approval_status']),
+            ];
+        } catch (\Exception $e) {
+            $conn->rollBack();
+            throw $e;
+        }
+    }
+
+    /**
      * Cancel the purchase requests this run generated while they are still
      * unconverted (Requested / Draft). POs already converted to an active order
      * (pending/processed), received, approved or rejected are deliberately NOT
@@ -4924,7 +6454,7 @@ public function searchItems($query) {
         $sql = "UPDATE supplier_orders SET status = 'cancelled', last_update = NOW()
                 WHERE (mrp_run_id = :run_id
                        OR remarks = CONCAT('Auto-generated from MRP Run #', :run_id2))
-                  AND LOWER(status) IN ('requested', 'draft') AND `remove` = 0";
+                  AND LOWER(status) IN ('requested', 'draft', 'pending_whse_approval', 'pending_sysadmin_approval', 'pending_qc_approval') AND `remove` = 0";
         $stmt = self::getConnection()->prepare($sql);
         $stmt->execute(['run_id' => $run_id, 'run_id2' => $run_id]);
         return $stmt->rowCount();
@@ -4942,7 +6472,7 @@ public function searchItems($query) {
         $sql = "UPDATE supplier_orders SET `remove` = 1, last_update = NOW()
                 WHERE (mrp_run_id = :run_id
                        OR remarks = CONCAT('Auto-generated from MRP Run #', :run_id2))
-                  AND LOWER(status) IN ('requested', 'draft', 'cancelled')
+                  AND LOWER(status) IN ('requested', 'draft', 'cancelled', 'pending_whse_approval', 'pending_sysadmin_approval', 'pending_qc_approval')
                   AND `remove` = 0";
         $stmt = self::getConnection()->prepare($sql);
         $stmt->execute(['run_id' => $run_id, 'run_id2' => $run_id]);
@@ -4960,7 +6490,7 @@ public function searchItems($query) {
             $preserved = 0;
             foreach ($linkedOrders as $order) {
                 $status = strtolower(trim((string) ($order['status'] ?? '')));
-                if (!in_array($status, ['requested', 'draft', 'cancelled'], true)) {
+                if (!in_array($status, ['requested', 'draft', 'cancelled', 'pending_whse_approval', 'pending_sysadmin_approval', 'pending_qc_approval'], true)) {
                     $preserved++;
                 }
             }
@@ -5013,7 +6543,71 @@ public function searchItems($query) {
                 ORDER BY mr.date_created DESC";
         $stmt = self::getConnection()->prepare($sql);
         $stmt->execute();
-        return $stmt->fetchAll();
+        return $this->deriveMrpRunStatuses($stmt->fetchAll());
+    }
+
+    /**
+     * Approval-state badge data for MRP history rows, derived from the run's
+     * linked requisition statuses (drafts born pending_whse_approval). Worst?
+     * No — most relevant: the furthest stage any linked requisition has
+     * reached decides the run badge, except pending stages which always dominate
+     * so partially approved runs stay visible as awaiting approval.
+     * Returns each run with ['approval_label', 'approval_badge', 'approval_statuses'].
+     */
+    public function deriveMrpRunStatuses(array $runs) {
+        $priority = [
+            'pending_whse_approval'     => ['label' => 'For Approval (WHSE Admin)',        'badge' => 'bg-warning text-dark',        'p' => 0],
+            'pending_sysadmin_approval' => ['label' => 'For Approval (System Admin)',      'badge' => 'bg-info text-dark',           'p' => 0],
+            'pending_qc_approval'       => ['label' => 'For Approval (QC Admin)',          'badge' => 'bg-primary',                  'p' => 0],
+            'pending_admin_approval'    => ['label' => 'For Approval (Admin · PO Draft)',  'badge' => 'bg-info text-dark',           'p' => 1],
+            'requested'                 => ['label' => 'Approved — In Procurement (Req.)', 'badge' => 'bg-success',                  'p' => 2],
+            'pending'                   => ['label' => 'Approved — Active PO',             'badge' => 'bg-primary',                  'p' => 3],
+            'processed'                 => ['label' => 'Approved — Active PO',             'badge' => 'bg-primary',                  'p' => 3],
+            'partially_received'        => ['label' => 'Approved — Partially Received',    'badge' => 'bg-secondary',                'p' => 4],
+            'For Inspection'            => ['label' => 'Approved — For QC Inspection',     'badge' => 'bg-primary',                  'p' => 4],
+            'PO_Created'                => ['label' => 'Approved — PO Consolidated',       'badge' => 'bg-light text-dark border',   'p' => 5],
+            'received'                  => ['label' => 'Approved — Fully Received',        'badge' => 'bg-success',                  'p' => 6],
+            'rejected'                  => ['label' => 'Rejected',                         'badge' => 'bg-danger',                   'p' => 7],
+            'cancelled'                 => ['label' => 'Cancelled / Rejected',             'badge' => 'bg-dark',                     'p' => 7],
+        ];
+        // Zero-lacking runs: gate progress lives on mrp_runs.approval_status.
+        $runLevel = [
+            'pending_whse_approval'     => ['label' => 'For Approval (WHSE Admin)',        'badge' => 'bg-warning text-dark'],
+            'pending_sysadmin_approval' => ['label' => 'For Approval (System Admin)',      'badge' => 'bg-info text-dark'],
+            'pending_qc_approval'       => ['label' => 'For Approval (QC Admin)',          'badge' => 'bg-primary'],
+            'approved'                  => ['label' => 'Approved — No Purchase Requests',  'badge' => 'bg-success'],
+            'cancelled'                 => ['label' => 'Cancelled / Rejected',             'badge' => 'bg-dark'],
+        ];
+        foreach ($runs as $idx => $run) {
+            if (!empty($run['approval_status'])) {
+                $meta = $runLevel[$run['approval_status']] ?? ['label' => ucfirst($run['approval_status']), 'badge' => 'bg-secondary'];
+                $runs[$idx]['approval_label'] = $meta['label'];
+                $runs[$idx]['approval_badge'] = $meta['badge'];
+                $runs[$idx]['approval_statuses'] = [$run['approval_status']];
+                continue;
+            }
+            $statuses = [];
+            foreach ($this->getLinkedSupplierOrdersForRun($run['run_id']) as $order) {
+                $statuses[strtolower(trim((string) $order['status']))] = true;
+            }
+            if (empty($statuses)) {
+                $runs[$idx]['approval_label'] = 'No Requisitions';
+                $runs[$idx]['approval_badge'] = 'bg-secondary-subtle text-secondary';
+                $runs[$idx]['approval_statuses'] = [];
+                continue;
+            }
+            $best = null;
+            foreach ($statuses as $status => $_) {
+                $meta = $priority[$status] ?? ['label' => ucfirst($status), 'badge' => 'bg-secondary', 'p' => 9];
+                if ($best === null || $meta['p'] < $best['p'] || ($meta['p'] === $best['p'] && $meta['p'] === 0)) {
+                    $best = $meta;
+                }
+            }
+            $runs[$idx]['approval_label'] = $best['label'];
+            $runs[$idx]['approval_badge'] = $best['badge'];
+            $runs[$idx]['approval_statuses'] = array_keys($statuses);
+        }
+        return $runs;
     }
 
     public function getMrpRunSnapshotData($run_id) {
@@ -5027,15 +6621,39 @@ public function searchItems($query) {
         $runRow = $run->fetch();
         if (!$runRow) return false;
 
-        $poStmt = $conn->prepare("SELECT po.*, c.customer_name, c.customer_code
-                FROM purchase_orders po
-                JOIN customers c ON po.customer_id = c.customer_id
-                WHERE po.po_id = :po_id");
-        $poStmt->execute(['po_id' => $runRow['po_id']]);
-        $poHeader = $poStmt->fetch();
-        if (!$poHeader) return false;
-
-        $allPoItems = $this->getPOItemsWithBOM($runRow['po_id']);
+        // FG-based runs (po_id NULL) still need a printable snapshot — build a
+        // lightweight header from the run + customer + BOM instead of a PO.
+        $poHeader = null;
+        if (!empty($runRow['po_id'])) {
+            $poStmt = $conn->prepare("SELECT po.*, c.customer_name, c.customer_code
+                    FROM purchase_orders po
+                    JOIN customers c ON po.customer_id = c.customer_id
+                    WHERE po.po_id = :po_id");
+            $poStmt->execute(['po_id' => $runRow['po_id']]);
+            $poHeader = $poStmt->fetch();
+            if (!$poHeader) return false;
+            $allPoItems = $this->getPOItemsWithBOM($runRow['po_id']);
+        } else {
+            $customerName = '';
+            $customerCode = '';
+            if (!empty($runRow['customer_id'])) {
+                $cStmt = $conn->prepare("SELECT customer_name, customer_code FROM customers WHERE customer_id = :id");
+                $cStmt->execute(['id' => $runRow['customer_id']]);
+                $cust = $cStmt->fetch(\PDO::FETCH_ASSOC);
+                if ($cust) {
+                    $customerName = $cust['customer_name'];
+                    $customerCode = $cust['customer_code'];
+                }
+            }
+            $poHeader = [
+                'po_id' => null,
+                'customer_po_number' => $runRow['mrp_ref'] ?? ('MRP-#' . $run_id),
+                'customer_name' => $customerName,
+                'customer_code' => $customerCode,
+                'production_type' => '',
+            ];
+            $allPoItems = [];
+        }
 
         $snapshotItems = $this->getMrpRunItems($run_id);
 
@@ -5054,6 +6672,8 @@ public function searchItems($query) {
                 'uom' => $uom,
                 'batch_unit_divisor' => $divisor,
                 'is_legacy_formula' => $isLegacy,
+                'bom_code' => $poi['bom_code'] ?? '',
+                'is_default' => !empty($poi['is_default'] ?? 0),
                 // Legacy display keys (lot-based)
                 'batch_qty' => $fillVolume,
                 'batch_uom' => $uom,
@@ -5061,6 +6681,45 @@ public function searchItems($query) {
                 'bulk_batch' => $isLegacy ? 0 : (($targetQty * $fillVolume) / $divisor),
                 'fg_code' => $poi['item_code'],
                 'fg_name' => $poi['item_description'],
+            ];
+        }
+        // FG-based run: pull the BOM meta + FG identity from the run header.
+        if (empty($batchMeta) && empty($runRow['po_id']) && !empty($runRow['fg_item_id'])) {
+            $fgStmt = $conn->prepare("SELECT item_code, item_description, item_uom FROM items WHERE item_id = :id");
+            $fgStmt->execute(['id' => $runRow['fg_item_id']]);
+            $fg = $fgStmt->fetch(\PDO::FETCH_ASSOC) ?: [];
+            $fillVolume = 1;
+            $uom = $fg['item_uom'] ?? 'PCS';
+            $divisor = 1000;
+            $isLegacy = 0;
+            if (!empty($runRow['bom_id'])) {
+                $bomStmt = $conn->prepare("SELECT b.batch_qty AS fill_volume, b.batch_uom AS uom, b.batch_unit_divisor, b.is_legacy_formula,
+                        b.bom_code, b.is_default
+                    FROM fg_boms b WHERE b.id = :id");
+                $bomStmt->execute(['id' => $runRow['bom_id']]);
+                if ($bom = $bomStmt->fetch(\PDO::FETCH_ASSOC)) {
+                    $fillVolume = floatval($bom['fill_volume'] ?? 1) ?: 1;
+                    $uom = $bom['uom'] ?: $uom;
+                    $divisor = floatval($bom['batch_unit_divisor'] ?? 1000) ?: 1000;
+                    $isLegacy = !empty($bom['is_legacy_formula']);
+                }
+            }
+            $targetQty = floatval($runRow['target_qty'] ?? 0);
+            $batchMeta[$runRow['fg_item_id']] = [
+                'target_qty' => $runRow['target_qty'],
+                'item_uom' => $fg['item_uom'] ?? '',
+                'fill_volume' => $fillVolume,
+                'uom' => $uom,
+                'batch_unit_divisor' => $divisor,
+                'is_legacy_formula' => $isLegacy,
+                'bom_code' => $bom['bom_code'] ?? '',
+                'is_default' => !empty($bom['is_default'] ?? 0),
+                'batch_qty' => $fillVolume,
+                'batch_uom' => $uom,
+                'batches_needed' => $isLegacy ? ($targetQty / $fillVolume) : 0,
+                'bulk_batch' => $isLegacy ? 0 : (($targetQty * $fillVolume) / $divisor),
+                'fg_code' => $fg['item_code'] ?? ($runRow['fg_code'] ?? ''),
+                'fg_name' => $fg['item_description'] ?? '',
             ];
         }
 
@@ -5071,6 +6730,7 @@ public function searchItems($query) {
                 $meta = $batchMeta[$fgId] ?? [
                     'target_qty' => 0, 'item_uom' => '', 'fill_volume' => 1, 'uom' => 'PCS',
                     'batch_unit_divisor' => 1000, 'is_legacy_formula' => 0,
+                    'bom_code' => '', 'is_default' => 0,
                     'batch_qty' => 1, 'batch_uom' => 'PCS', 'batches_needed' => 0, 'bulk_batch' => 0,
                     'fg_code' => $item['fg_code'], 'fg_name' => $item['fg_name'],
                 ];
@@ -5084,6 +6744,8 @@ public function searchItems($query) {
                     'uom' => $meta['uom'],
                     'batch_unit_divisor' => $meta['batch_unit_divisor'],
                     'is_legacy_formula' => $meta['is_legacy_formula'],
+                    'bom_code' => $meta['bom_code'] ?? '',
+                    'is_default' => !empty($meta['is_default'] ?? 0),
                     'batch_qty' => $meta['batch_qty'],
                     'batch_uom' => $meta['batch_uom'],
                     'batches_needed' => $meta['batches_needed'],
@@ -5096,6 +6758,7 @@ public function searchItems($query) {
                 'item_code' => $item['component_code'],
                 'item_description' => $item['component_name'],
                 'item_uom' => $item['component_uom'],
+                'category' => $item['component_type'] ?? '-',
                 'total_reqt' => floatval($item['total_reqt']),
                 'soh' => floatval($item['soh']),
                 'allocated' => floatval($item['allocated']),
@@ -5139,6 +6802,72 @@ public function searchItems($query) {
             'userDept' => $_SESSION['department'] ?? '',
             'snapshotDate' => $runRow['date_created'],
             'runId' => $run_id,
+            'mrpRef' => $runRow['mrp_ref'] ?? ('MRP-#' . $run_id),
+        ];
+    }
+
+    // ─── Stock In/Out (stock_movements ledger) ─────────────────────────────────
+
+    /** Purchasing POs that can be referenced for a stock IN entry. */
+    public function getStockInPoOptions() {
+        $sql = "SELECT so.supplier_order_id, so.po_ref, so.supplier_name,
+                       i.item_code, i.item_description, i.item_id, i.item_uom
+                FROM supplier_orders so
+                JOIN items i ON so.item_id = i.item_id
+                WHERE so.`remove` = 0
+                  AND so.status NOT IN ('cancelled', 'rejected')
+                GROUP BY so.supplier_order_id
+                ORDER BY so.supplier_order_id DESC
+                LIMIT 200";
+        return self::getConnection()->query($sql)->fetchAll(\PDO::FETCH_ASSOC);
+    }
+
+    /** Recent stock movements (newest first). */
+    public function getStockMovements($limit = 50) {
+        $sql = "SELECT sm.*, i.item_code, i.item_description, i.item_uom, u.full_name AS created_by_name
+                FROM stock_movements sm
+                JOIN items i ON sm.item_id = i.item_id
+                LEFT JOIN users u ON sm.created_by = u.user_id
+                ORDER BY sm.date_created DESC, sm.movement_id DESC
+                LIMIT " . (int) $limit;
+        return self::getConnection()->query($sql)->fetchAll(\PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Insert one stock movement row. The SOH delta is applied separately by
+     * ItemImportModel::adjustSohDelta inside the controller's flow.
+     */
+    public function recordStockMovement(array $data) {
+        $sql = "INSERT INTO stock_movements (movement_type, item_id, site_code, qty, reference_type, reference_no, remarks, created_by)
+                VALUES (:movement_type, :item_id, :site_code, :qty, :reference_type, :reference_no, :remarks, :created_by)";
+        $stmt = self::getConnection()->prepare($sql);
+        $stmt->execute([
+            'movement_type' => $data['movement_type'],
+            'item_id' => (int) $data['item_id'],
+            'site_code' => $data['site_code'],
+            'qty' => (float) $data['qty'],
+            'reference_type' => $data['reference_type'] ?? null,
+            'reference_no' => $data['reference_no'] ?? null,
+            'remarks' => $data['remarks'] ?? null,
+            'created_by' => $data['created_by'] ?? null,
+        ]);
+        return self::getConnection()->lastInsertId();
+    }
+
+    /** Purchasing-PO status counts for the procurement dashboard. */
+    public function getProcurementStatusCounts() {
+        $byStatus = [];
+        foreach (self::getConnection()->query(
+            "SELECT status, COUNT(*) AS c FROM supplier_orders WHERE `remove` = 0 GROUP BY status"
+        )->fetchAll(\PDO::FETCH_ASSOC) as $row) {
+            $byStatus[$row['status']] = (int) $row['c'];
+        }
+        return [
+            'requested' => $byStatus['requested'] ?? 0,
+            'processed' => $byStatus['processed'] ?? 0,
+            'partially_received' => $byStatus['partially_received'] ?? 0,
+            'received' => $byStatus['received'] ?? 0,
+            'all' => array_sum($byStatus),
         ];
     }
 

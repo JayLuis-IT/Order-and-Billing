@@ -73,6 +73,27 @@ class CatalogModel extends BaseModel {
     }
 
     public function searchItems($query) {
+        $query = trim((string) $query);
+        // Browse mode (empty query): the Purchasing PO code field shows the
+        // first codes on focus so a user who doesn't know the code can pick.
+        if ($query === '') {
+            $sql = "(SELECT i.item_id, i.item_code, i.item_description, i.item_uom, i.uom_conversion
+                    FROM items i
+                    WHERE i.`remove` = 0 AND i.status = 1
+                    ORDER BY i.item_code ASC
+                    LIMIT 50)
+                    UNION
+                    (SELECT item_id, item_code, item_description, item_uom, uom_conversion
+                    FROM customer_finished_goods
+                    WHERE `remove` = 0 AND status = 1
+                    ORDER BY item_code ASC
+                    LIMIT 50)
+                    ORDER BY item_code ASC
+                    LIMIT 50";
+            $stmt = self::getConnection()->prepare($sql);
+            $stmt->execute();
+            return $stmt->fetchAll();
+        }
         $sql = "(SELECT i.item_id, i.item_code, i.item_description, i.item_uom, i.uom_conversion
                 FROM items i
                 WHERE i.`remove` = 0 AND i.status = 1

@@ -232,29 +232,31 @@ function openReportModal(historyId, lotNumber, addedQty) {
 }
 
 function undoProductionEntry(historyId, button) {
-    if (!confirm('Undo this entry? The quantity will be deducted from the production lot.')) return;
-    button.disabled = true;
-    button.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-    fetch('?controller=production&action=undoLastFgEntry', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ history_ids: [historyId] })
-    })
-    .then(function(response) { return response.json(); })
-    .then(function(data) {
-        if (data.success) {
-            var row = button.closest('tr');
-            if (row) row.remove();
-            return;
-        }
-        alert(data.error || 'Unable to undo this entry.');
-        button.disabled = false;
-        button.innerHTML = '<i class="bi bi-arrow-counterclockwise"></i><span class="undo-countdown"></span>';
-    })
-    .catch(function() {
-        alert('Network error. Please try again.');
-        button.disabled = false;
-        button.innerHTML = '<i class="bi bi-arrow-counterclockwise"></i><span class="undo-countdown"></span>';
+    Dlg.confirm('Undo this entry? The quantity will be deducted from the production lot.').then(function(ok) {
+        if (!ok) return;
+        button.disabled = true;
+        button.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+        fetch('?controller=production&action=undoLastFgEntry', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ history_ids: [historyId] })
+        })
+        .then(function(response) { return response.json(); })
+        .then(function(data) {
+            if (data.success) {
+                var row = button.closest('tr');
+                if (row) row.remove();
+                return;
+            }
+            Dlg.alert(data.error || 'Unable to undo this entry.');
+            button.disabled = false;
+            button.innerHTML = '<i class="bi bi-arrow-counterclockwise"></i><span class="undo-countdown"></span>';
+        })
+        .catch(function() {
+            Dlg.alert('Network error. Please try again.');
+            button.disabled = false;
+            button.innerHTML = '<i class="bi bi-arrow-counterclockwise"></i><span class="undo-countdown"></span>';
+        });
     });
 }
 

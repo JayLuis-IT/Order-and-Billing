@@ -25,7 +25,7 @@ class ProductionController {
         }
         $publicActions = ['getPODetails', 'searchItems', 'fgInput', 'saveFgInput', 'getLotsForInventory', 'lmrEntry', 'getCustomerPOs', 'getItemBomInfo'];
         if (!in_array($action, $publicActions, true) && ($_SESSION['department'] ?? '') !== 'production') {
-            header('Location: ?controller=admin');
+            header('Location: ' . \App\Helpers\RoleHelper::homeUrl());
             exit;
         }
         $this->warehouseModel = new WarehouseModel();

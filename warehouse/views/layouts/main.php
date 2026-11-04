@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -6,6 +6,9 @@
     <title><?= $page_title ?? 'Warehouse Dashboard' ?></title>
     <link href="public/css/bootstrap.min.css" rel="stylesheet">
     <link href="public/css/bootstrap-icons.min.css" rel="stylesheet">
+    <link href="public/css/sweetalert2.min.css" rel="stylesheet">
+    <script src="public/js/sweetalert2.min.js"></script>
+    <script src="public/js/dialogs.js"></script>
     <link href="public/css/style.css" rel="stylesheet">
     <style>
         :root {
@@ -80,76 +83,55 @@
             <!-- SIDEBAR NAV - Slides in/out via CSS transform -->
             <nav class="sidebar" id="sidebar">
                 <div class="text-center py-3 border-bottom" style="border-color: rgba(255,255,255,0.08) !important">
-                    <h5 class="mb-0" style="color: #fff; font-weight: 700; letter-spacing: 0.5px; font-size: 1rem;"><?= htmlspecialchars(ucfirst($_SESSION['department'] ?? 'Warehouse')) ?></h5>
+                    <h5 class="mb-0" style="color: #fff; font-weight: 700; letter-spacing: 0.5px; font-size: 1rem;"><?= htmlspecialchars($_SESSION['role'] ?? '') !== '' && isset($roleLabel) ? htmlspecialchars($roleLabel) : htmlspecialchars(ucfirst($_SESSION['department'] ?? 'Warehouse')) ?></h5>
                     <small style="color: #64748b; font-size: 0.7rem;"><?= htmlspecialchars($_SESSION['full_name'] ?? '') ?></small>
                 </div>
                 <?php $currentAction = $_GET['action'] ?? ''; ?>
+                <?php
+                // Non-warehouse departments (admin/rnd) that reach warehouse
+                // pages see the full menu; warehouse roles see only their own.
+                if (empty($sideMenu)) {
+                    $sideMenu = \App\Helpers\RoleHelper::warehouseMenu('whse_admin');
+                }
+                ?>
                 <ul class="nav flex-column sidebar-menu">
-                    <li class="nav-item">
-                        <a class="nav-link <?= $currentAction === '' ? 'active' : '' ?>" href="?controller=warehouse">
-                            <i class="bi bi-speedometer2 me-2"></i>Dashboard
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link <?= $currentAction === 'purchaseOrders' ? 'active' : '' ?>" href="?controller=warehouse&action=purchaseOrders">
-                            <i class="bi bi-cart3 me-2"></i>Customer PO
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link <?= in_array($currentAction, ['deliveries', 'createDelivery']) ? 'active' : '' ?>" href="?controller=warehouse&action=deliveries">
-                            <i class="bi bi-truck me-2"></i>Deliveries
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link <?= in_array($currentAction, ['items', 'itemImportForm', 'itemImportPreview', 'itemImportConfirm']) ? 'active' : '' ?>" href="?controller=warehouse&action=items">
-                            <i class="bi bi-box-seam me-2"></i>Item Master List
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link <?= in_array($currentAction, ['purchasingPo', 'createPurchasingPo']) ? 'active' : '' ?>" href="?controller=warehouse&action=purchasingPo">
-                            <i class="bi bi-cart3 me-2"></i>Purchasing PO
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link <?= $currentAction === 'receivingPo' ? 'active' : '' ?>" href="?controller=warehouse&action=receivingPo">
-                            <i class="bi bi-box-arrow-in-down me-2"></i>Receiving Purchasing PO
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link <?= in_array($currentAction, ['index', 'create', 'edit', 'printLmr']) || str_contains($currentAction ?? '', 'lmr') ? 'active' : '' ?>" href="?controller=lmr&action=index">
-                            <i class="bi bi-clipboard-check me-2"></i>LMR Entry
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link <?= ($currentAction ?? '') === 'mrp' ? 'active' : '' ?>" href="?controller=warehouse&action=mrp">
-                            <i class="bi bi-calculator me-2"></i>MRP Sheet
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link <?= ($currentAction ?? '') === 'activityLogs' ? 'active' : '' ?>" href="?controller=warehouse&action=activityLogs">
-                            <i class="bi bi-clock-history me-2"></i>Activity Logs
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link <?= in_array($currentAction, ['reports', 'deliveryReport']) ? 'active' : '' ?>" href="#" data-bs-toggle="collapse" data-bs-target="#reportsSubmenu">
-                            <i class="bi bi-graph-up me-2"></i>Reports
-                            <i class="bi bi-chevron-down ms-auto" style="font-size:0.7rem"></i>
-                        </a>
-                        <div class="collapse <?= in_array($currentAction, ['reports', 'deliveryReport']) ? 'show' : '' ?>" id="reportsSubmenu">
-                            <ul class="nav flex-column ms-4">
-                                <li class="nav-item">
-                                    <a class="nav-link py-1 <?= ($currentAction ?? '') === 'reports' ? 'active' : '' ?>" href="?controller=warehouse&action=reports" style="font-size:0.8rem">
-                                        <i class="bi bi-bar-chart me-2"></i>Overview
-                                    </a>
-                                </li>
-                                <li class="nav-item">
-                                    <a class="nav-link py-1 <?= ($currentAction ?? '') === 'deliveryReport' ? 'active' : '' ?>" href="?controller=warehouse&action=deliveryReport" style="font-size:0.8rem">
-                                        <i class="bi bi-truck me-2"></i>Deliveries
-                                    </a>
-                                </li>
-                            </ul>
-                        </div>
-                    </li>
+                    <?php foreach ($sideMenu as $menuItem): ?>
+                        <?php
+                        $isLmrItem = ($menuItem['label'] ?? '') === 'LMR Entry';
+                        $isActive = $isLmrItem
+                            ? (($_GET['controller'] ?? '') === 'lmr' && ($_GET['action'] ?? 'index') !== 'logout')
+                            : (isset($_GET['controller']) && $_GET['controller'] === 'warehouse'
+                                && in_array($currentAction, $menuItem['activeActions'] ?? [], true));
+                        ?>
+                        <?php if (!empty($menuItem['collapse'])): ?>
+                        <li class="nav-item">
+                            <a class="nav-link <?= in_array($currentAction, $menuItem['activeActions'] ?? [], true) ? 'active' : '' ?>" href="#" data-bs-toggle="collapse" data-bs-target="#reportsSubmenu">
+                                <i class="bi <?= htmlspecialchars($menuItem['icon']) ?> me-2"></i><?= htmlspecialchars($menuItem['label']) ?>
+                                <i class="bi bi-chevron-down ms-auto" style="font-size:0.7rem"></i>
+                            </a>
+                            <div class="collapse <?= in_array($currentAction, $menuItem['activeActions'] ?? [], true) ? 'show' : '' ?>" id="reportsSubmenu">
+                                <ul class="nav flex-column ms-4">
+                                    <?php foreach (($menuItem['sub'] ?? []) as $subItem): ?>
+                                    <li class="nav-item">
+                                        <a class="nav-link py-1 <?= ($currentAction ?? '') === $subItem['action'] ? 'active' : '' ?>" href="<?= htmlspecialchars($subItem['href']) ?>" style="font-size:0.8rem">
+                                            <i class="bi <?= htmlspecialchars($subItem['icon']) ?> me-2"></i><?= htmlspecialchars($subItem['label']) ?>
+                                        </a>
+                                    </li>
+                                    <?php endforeach; ?>
+                                </ul>
+                            </div>
+                        </li>
+                        <?php else: ?>
+                        <li class="nav-item">
+                            <a class="nav-link <?= $isActive ? 'active' : '' ?>" href="<?= htmlspecialchars($menuItem['href']) ?>">
+                                <i class="bi <?= htmlspecialchars($menuItem['icon']) ?> me-2"></i><?= htmlspecialchars($menuItem['label']) ?>
+                                <?php if (($menuItem['badge'] ?? '') === 'mrpApproval' && !empty($isMrpApprover) && !empty($mrpApprovalCount)): ?>
+                                <span class="badge rounded-pill bg-danger ms-auto"><?= (int) $mrpApprovalCount ?></span>
+                                <?php endif; ?>
+                            </a>
+                        </li>
+                        <?php endif; ?>
+                    <?php endforeach; ?>
                     <li class="nav-item mt-auto">
                         <a class="nav-link" href="?controller=auth&action=logout" style="color: #64748b; transition: all 0.2s;" onmouseover="this.style.color='#ef4444'" onmouseout="this.style.color='#64748b'">
                             <i class="bi bi-box-arrow-left me-2"></i>Logout
@@ -162,7 +144,7 @@
             <div class="main-wrapper" id="mainWrapper">
             <main class="p-4">
                 <!-- Header with toggle button -->
-                <div class="d-flex justify-content-between align-items-center mb-4 pb-2 border-bottom">
+                <div class="d-flex justify-content-between align-items-center mb-4 pb-2 border-bottom no-print">
                     <h4 class="mb-0"><?= $page_title ?? 'Dashboard' ?></h4>
                     <!-- TOGGLE BUTTON - Click to slide sidebar -->
                     <div class="d-flex align-items-center gap-2">

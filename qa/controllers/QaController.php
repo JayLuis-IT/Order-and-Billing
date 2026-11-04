@@ -16,7 +16,7 @@ class QaController {
             exit;
         }
         if (($_SESSION['department'] ?? '') !== 'qa') {
-            header('Location: ?controller=admin');
+            header('Location: ' . \App\Helpers\RoleHelper::homeUrl());
             exit;
         }
         $this->qaModel = new QaModel();

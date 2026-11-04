@@ -51,6 +51,19 @@ usort($components, function ($a, $b) {
 $components = array_values($components);
 // Receiving lot numbers (what actually arrived from the supplier) per RM
 $receivingLots = (new \App\Models\LmrModel())->getReceivingLotNumbers(array_column($components, 'item_code'));
+// Selected lot allocations per component (one print row per lot for correct tracking)
+$lotAllocations = (new \App\Models\LmrModel())->getLotAllocations($lmr['lmr_id'] ?? 0);
+$allocsByItemCode = [];
+foreach ($lotAllocations as $alloc) {
+    $code = trim((string) ($alloc['item_code'] ?? ''));
+    if ($code === '') {
+        continue;
+    }
+    $allocsByItemCode[$code][] = [
+        'lot_number' => $alloc['lot_number'],
+        'allocated_qty' => floatval($alloc['allocated_qty']),
+    ];
+}
 // Total Raw Material = the ordered quantity the raw materials must produce
 $totalRawMaterial = 0.0;
 foreach ($breakdown as $line) {
@@ -335,7 +348,6 @@ $uf = function ($val) {
                 <?php foreach ($items as $lineItem): ?>
                     <tr>
                         <td><?= htmlspecialchars($lineItem['item_code'] ?? '-') ?></td>
-                        <td><?= htmlspecialchars($lineItem['item_code'] ?? '-') ?></td>
                         <td><?= htmlspecialchars($lineItem['item_description'] ?? '-') ?></td>
                         <td><?= formatQty(floatval($lineItem['qty_ordered'] ?? 0), 3) ?></td>
                         <td><?= $uf(trim((string) (($lineItem['lot_number'] ?? '') ?: ($lmr['lot_number'] ?? '')))) ?></td>
@@ -366,7 +378,24 @@ $uf = function ($val) {
                     <td colspan="9" class="empty-note">No BOM components available for this LMR.</td>
                 </tr>
             <?php else: ?>
-                <?php foreach ($components as $comp): ?>
+                <?php foreach ($components as $comp):
+                    $compAllocs = $allocsByItemCode[$comp['item_code']] ?? [];
+                    if (count($compAllocs) > 1):
+                        // One tracked row per selected lot
+                        foreach ($compAllocs as $alloc): ?>
+                        <tr>
+                            <td><?= htmlspecialchars($comp['phase_code']) ?> - <?= htmlspecialchars($comp['item_code']) ?></td>
+                            <td><?= $uf((string) $alloc['lot_number']) ?></td>
+                            <td class="num"><?= formatQty($alloc['allocated_qty'], 3) ?></td>
+                            <td><?= htmlspecialchars($comp['item_uom']) ?></td>
+                            <td>_______</td>
+                            <td>_______</td>
+                            <td>_______</td>
+                            <td>_______</td>
+                            <td>_______</td>
+                        </tr>
+                    <?php endforeach;
+                    else: ?>
                     <!-- Main Item Row -->
                     <tr>
                         <td><?= htmlspecialchars($comp['phase_code']) ?> - <?= htmlspecialchars($comp['item_code']) ?></td>
@@ -379,6 +408,7 @@ $uf = function ($val) {
                         <td>_______</td>
                         <td>_______</td>
                     </tr>
+                    <?php endif; ?>
                 <?php endforeach; ?>
             <?php endif; ?>
         </tbody>

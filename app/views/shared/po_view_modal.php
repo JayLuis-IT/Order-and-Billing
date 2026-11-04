@@ -88,6 +88,9 @@ $poViewEndpoint = $isQcController
 
     var STATUS_BADGES = {
         'requested': 'bg-info',
+        'pending_whse_approval': 'bg-warning text-dark',
+        'pending_sysadmin_approval': 'bg-info text-dark',
+        'pending_qc_approval': 'bg-primary',
         'pending': 'bg-warning text-dark',
         'processed': 'bg-primary',
         'partially_received': 'bg-info text-dark',

@@ -234,7 +234,7 @@
                         </button>
                         <a href="?controller=admin&action=deleteDelivery&id=<?= $d['delivery_id'] ?>"
                            class="btn btn-sm btn-outline-danger"
-                           onclick="return confirm('Delete this delivery and roll back its quantities?')"
+                           data-confirm="Delete this delivery and roll back its quantities?"
                            title="Delete delivery and undo its impact">
                             <i class="bi bi-trash"></i>
                         </a>
@@ -490,7 +490,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 })
                 .catch(function(error) {
                     console.error('Error:', error);
-                    alert('Failed to load PO details: ' + error.message);
+                    Dlg.alert('Failed to load PO details: ' + error.message);
                 });
         });
     });
@@ -575,14 +575,14 @@ document.getElementById('editDeliveryForm').addEventListener('submit', function(
     .then(function(data) {
         if (data.success) {
             bootstrap.Modal.getInstance(document.getElementById('editDeliveryModal')).hide();
-            alert('Delivery updated successfully!');
+            Dlg.alert('Delivery updated successfully!');
             location.reload();
         } else {
-            alert('Error: ' + (data.error || 'Failed to update delivery'));
+            Dlg.alert('Error: ' + (data.error || 'Failed to update delivery'));
         }
     })
     .catch(function(err) {
-        alert('Error updating delivery: ' + err.message);
+        Dlg.alert('Error updating delivery: ' + err.message);
     });
 });
 </script>

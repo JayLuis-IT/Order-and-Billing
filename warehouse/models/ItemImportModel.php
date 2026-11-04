@@ -122,6 +122,27 @@ class ItemImportModel extends BaseModel {
         ]);
     }
 
+    /** Apply a signed delta to a site's SOH (Stock In/Out page). */
+    public function adjustSohDelta($itemId, $siteCode, $delta) {
+        $sql = "INSERT INTO inventory_balances (item_id, site_code, qty_on_hand)
+                VALUES (:item_id, :site_code, :delta)
+                ON DUPLICATE KEY UPDATE qty_on_hand = qty_on_hand + VALUES(qty_on_hand)";
+        $stmt = self::getConnection()->prepare($sql);
+        return $stmt->execute([
+            'item_id' => (int)$itemId,
+            'site_code' => $siteCode,
+            'delta' => (float)$delta
+        ]);
+    }
+
+    public function getSoh($itemId, $siteCode) {
+        $sql = "SELECT qty_on_hand FROM inventory_balances WHERE item_id = :item_id AND site_code = :site_code";
+        $stmt = self::getConnection()->prepare($sql);
+        $stmt->execute(['item_id' => (int)$itemId, 'site_code' => $siteCode]);
+        $qty = $stmt->fetchColumn();
+        return $qty === false ? 0.0 : (float)$qty;
+    }
+
     public static function mapItemType($cType) {
         $cType = strtoupper(trim($cType));
         if (strpos($cType, 'RM') === 0) return 'RM';

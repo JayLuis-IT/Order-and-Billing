@@ -75,7 +75,7 @@
                         <h5 class="modal-title" id="editSIModalLabel"><i class="bi bi-pencil-square me-2"></i>Edit Sales Invoice Number</h5>
                         <button type="button" class="btn-close" aria-label="Close" data-bs-dismiss="modal"></button>
                     </div>
-                    <form method="POST" action="?controller=finance&action=saveSINumber" onsubmit="return confirmSIEdit();">
+                    <form method="POST" action="?controller=finance&action=saveSINumber" id="editSIForm">
                         <div class="modal-body">
                             <input type="hidden" name="delivery_id" value="<?= $delivery['delivery_id'] ?>">
                             <div class="mb-3">
@@ -221,7 +221,7 @@
                             </a>
                             <a href="?controller=finance&action=deleteReceipt&id=<?= $r['receipt_id'] ?>&delivery_id=<?= $delivery['delivery_id'] ?>" 
                                class="btn btn-sm btn-outline-danger" title="Delete"
-                               onclick="return confirm('Are you sure you want to delete this SI attachment?')">
+                               data-confirm="Are you sure you want to delete this SI attachment?">
                                 <i class="bi bi-trash"></i>
                             </a>
                         </div>
@@ -277,13 +277,23 @@ function openEditSIModal() {
     modal.show();
 }
 
-function confirmSIEdit() {
-    var newSI = document.getElementById('editSINumberInput').value.trim();
-    var currentSI = '<?= addslashes($delivery['si_number']) ?>';
-    if (newSI === currentSI) {
-        return true;
-    }
-    return confirm('Are you sure you want to change the SI number from "' + currentSI + '" to "' + newSI + '"?\n\nThis change will reflect across Finance, Admin, and Warehouse modules.');
+// Async SI-change confirmation: confirm (SweetAlert) only when the number
+// actually changed; unchanged submits go through directly.
+var siForm = document.getElementById('editSIForm');
+if (siForm) {
+    var siConfirmed = false;
+    siForm.addEventListener('submit', function(e) {
+        if (siConfirmed) return;                       // second pass after confirm
+        var newSI = document.getElementById('editSINumberInput').value.trim();
+        var currentSI = '<?= addslashes($delivery['si_number']) ?>';
+        if (newSI === currentSI) return;               // unchanged — submit as-is
+        e.preventDefault();
+        Dlg.confirm('Are you sure you want to change the SI number from "' + currentSI + '" to "' + newSI + '"?\n\nThis change will reflect across Finance, Admin, and Warehouse modules.').then(function(ok) {
+            if (!ok) return;
+            siConfirmed = true;
+            siForm.requestSubmit();
+        });
+    });
 }
 </script>
 <?php endif; ?>

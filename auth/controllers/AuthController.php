@@ -3,6 +3,7 @@ namespace App\Controllers;
 
 use App\Models\UserModel;
 use App\Models\AuditModel;
+use App\Helpers\RoleHelper;
 
 class AuthController {
     private $userModel;
@@ -35,20 +36,18 @@ class AuthController {
                 $_SESSION['username'] = $user['username'];
                 $_SESSION['full_name'] = $user['full_name'];
                 $_SESSION['department'] = $user['department'];
+                $_SESSION['role'] = !empty($user['role']) ? $user['role'] : '';
 
                 AuditModel::log($user['user_id'], 'LOGIN', 'auth', 'User logged in: ' . $user['username'], null, ['username' => $username], 'user', $user['user_id']);
 
-                $redirectMap = [
-                    'admin' => 'admin',
-                    'warehouse' => 'warehouse',
-                    'production' => 'production',
-                    'finance' => 'finance',
-                    'qc' => 'qc',
-                    'qa' => 'qa',
-                    'rnd' => 'rnd'
-                ];
-                $redirect = $redirectMap[$user['department']] ?? 'admin';
-                header("Location: ?controller={$redirect}");
+                // Warehouse/QC users need a role to land on their role home;
+                // without one they get the "no role assigned" holding page.
+                if (in_array($user['department'], ['warehouse', 'qc'], true) && $_SESSION['role'] === '') {
+                    header("Location: ?controller=auth&action=noRole");
+                    exit;
+                }
+
+                header('Location: ' . RoleHelper::homeUrl());
                 exit;
             } else {
                 $_SESSION['error'] = 'Invalid username or password';
@@ -58,17 +57,12 @@ class AuthController {
         }
 
         if (isset($_SESSION['user_id'])) {
-            $redirectMap = [
-                'admin' => 'admin',
-                'warehouse' => 'warehouse',
-                'production' => 'production',
-                'finance' => 'finance',
-                'qc' => 'qc',
-                'qa' => 'qa',
-                'rnd' => 'rnd'
-            ];
-            $redirect = $redirectMap[$_SESSION['department']] ?? 'admin';
-            header("Location: ?controller={$redirect}");
+            $department = $_SESSION['department'] ?? '';
+            if (in_array($department, ['warehouse', 'qc'], true) && RoleHelper::currentRole() === null) {
+                header("Location: ?controller=auth&action=noRole");
+                exit;
+            }
+            header('Location: ' . RoleHelper::homeUrl());
             exit;
         }
 
@@ -144,6 +138,21 @@ class AuthController {
         session_destroy();
         header('Location: ?controller=auth&action=login');
         exit;
+    }
+
+    /** Holding page for warehouse/QC accounts that have no role assigned yet. */
+    public function noRole() {
+        if (!isset($_SESSION['user_id'])) {
+            header('Location: ?controller=auth&action=login');
+            exit;
+        }
+        $department = $_SESSION['department'] ?? '';
+        if (!in_array($department, ['warehouse', 'qc'], true) || RoleHelper::currentRole() !== null) {
+            header('Location: ' . RoleHelper::homeUrl());
+            exit;
+        }
+        $data['page_title'] = 'No Role Assigned';
+        $this->render('no_role', $data);
     }
 
     private function render($view, $data = []) {

@@ -26,6 +26,14 @@ spl_autoload_register(function ($class) {
 
 header('Content-Type: application/json');
 
+// Endpoint is legacy/unused — require a logged-in QC Admin session.
+if (empty($_SESSION['user_id']) || ($_SESSION['department'] ?? '') !== 'qc'
+    || \App\Helpers\RoleHelper::currentRole() !== 'qc_admin') {
+    http_response_code(403);
+    echo json_encode(['success' => false, 'error' => 'Forbidden']);
+    exit;
+}
+
 try {
     $payload = $_POST;
     if (empty($payload)) {

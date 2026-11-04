@@ -385,7 +385,7 @@ document.querySelectorAll('.view-po-btn').forEach(function(btn) {
                 modal.show();
             })
             .catch(function(error) {
-                alert('Failed to load PO details');
+                Dlg.alert('Failed to load PO details');
             });
     });
 });

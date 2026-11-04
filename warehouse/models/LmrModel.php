@@ -136,6 +136,115 @@ class LmrModel extends BaseModel {
     }
 
     /**
+     * FIFO lot list for one component item, sourced from inventory_stock
+     * (per-lot rows written by QC receiving) and joined to receiving_items
+     * for the received / expiry dates. Available per lot = on hand - blocked
+     * - already reserved by other active LMR lot allocations.
+     * Sorted oldest receipt first so FIFO rotation is front of the list.
+     */
+    public function getAvailableLotsForItem($itemId, $excludeLmrId = null) {
+        $itemId = intval($itemId);
+        if ($itemId <= 0) {
+            return [];
+        }
+        $excludeLmrId = intval($excludeLmrId);
+
+        $sql = "
+            SELECT s.lot_number,
+                   SUM(GREATEST(s.qty_on_hand - s.qty_blocked, 0)) AS raw_qty,
+                   MAX(r.received_date) AS received_date,
+                   MIN(r.expiry_date) AS expiry_date,
+                   COALESCE(SUM(GREATEST(s.qty_on_hand - s.qty_blocked, 0)), 0) -
+                   COALESCE(ua.allocated_qty, 0) AS available_qty
+            FROM inventory_stock s
+            LEFT JOIN receiving_items r ON r.id = s.source_receiving_item_id
+            LEFT JOIN (
+                SELECT item_id, lot_number, SUM(allocated_qty) AS allocated_qty
+                FROM lmr_lot_allocations
+                WHERE status = 'active'"
+                . ($excludeLmrId > 0 ? " AND lmr_id <> :exclude_lmr" : "") . "
+                GROUP BY item_id, lot_number
+            ) ua ON ua.item_id = s.item_id AND ua.lot_number = s.lot_number
+            WHERE s.item_id = :item_id
+              AND s.status = 'PASSED'
+            GROUP BY s.lot_number, ua.allocated_qty
+            HAVING available_qty > 0
+            ORDER BY (MAX(r.received_date) IS NULL) ASC,
+                     MAX(r.received_date) ASC,
+                     MIN(r.expiry_date) ASC";
+
+        $stmt = self::getConnection()->prepare($sql);
+        $stmt->execute(array_merge(
+            $excludeLmrId > 0 ? ['exclude_lmr' => $excludeLmrId] : [],
+            ['item_id' => $itemId]
+        ));
+
+        return array_map(function ($row) {
+            return [
+                'lot_number' => $row['lot_number'],
+                'available_qty' => round(floatval($row['available_qty']), 4),
+                'qty_on_hand' => round(floatval($row['raw_qty']), 4),
+                'received_date' => $row['received_date'] ? date('Y-m-d', strtotime($row['received_date'])) : null,
+                'expiry_date' => $row['expiry_date'] ? date('Y-m-d', strtotime($row['expiry_date'])) : null,
+            ];
+        }, $stmt->fetchAll(\PDO::FETCH_ASSOC));
+    }
+
+    /**
+     * Active lot allocations for one LMR ordered by item then receipt order.
+     */
+    public function getLotAllocations($lmrId) {
+        $stmt = self::getConnection()->prepare("
+            SELECT id, lmr_id, lri_id, item_id, item_code, lot_number, allocated_qty
+            FROM lmr_lot_allocations
+            WHERE lmr_id = :lmr_id AND status = 'active'
+            ORDER BY item_id, id ASC
+        ");
+        $stmt->execute(['lmr_id' => intval($lmrId)]);
+        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Replace the active lot allocations of an LMR with the given set.
+     * Each allocation: [item_id, item_code, lot_number, allocated_qty].
+     * lri_id is re-linked separately (see linkLotAllocationsToItemRows).
+     */
+    public function saveLotAllocations($lmrId, array $allocations) {
+        $pdo = self::getConnection();
+        $cancel = $pdo->prepare("
+            UPDATE lmr_lot_allocations SET status = 'cancelled', updated_at = NOW()
+            WHERE lmr_id = :lmr_id AND status = 'active'
+        ");
+        $cancel->execute(['lmr_id' => intval($lmrId)]);
+
+        if (empty($allocations)) {
+            return;
+        }
+
+        $insert = $pdo->prepare("
+            INSERT INTO lmr_lot_allocations
+                (lmr_id, lri_id, item_id, item_code, lot_number, allocated_qty, status, created_by)
+            VALUES
+                (:lmr_id, :lri_id, :item_id, :item_code, :lot_number, :qty, 'active', :created_by)
+        ");
+        foreach ($allocations as $alloc) {
+            $qty = floatval($alloc['allocated_qty'] ?? 0);
+            if ($qty <= 0 || $alloc['lot_number'] === '' || $alloc['lot_number'] === null) {
+                continue;
+            }
+            $insert->execute([
+                'lmr_id' => intval($lmrId),
+                'lri_id' => $alloc['lri_id'] ?? null,
+                'item_id' => intval($alloc['item_id']),
+                'item_code' => $alloc['item_code'] ?? null,
+                'lot_number' => $alloc['lot_number'],
+                'qty' => round($qty, 4),
+                'created_by' => $_SESSION['user_id'] ?? null,
+            ]);
+        }
+    }
+
+    /**
      * Legacy-aware required quantity for one BOM component.
      * Legacy: (orderQty / batch_qty) * dosage * wastage
      * New:    RM → ((orderQty * fill_volume) / divisor) * dosage% * wastage
@@ -673,6 +782,7 @@ class LmrModel extends BaseModel {
             if ($shortage > 0) $hasShortage = true;
 
             $componentDetails[] = [
+                'component_item_id' => $comp['component_item_id'] ?? null,
                 'item_code' => $comp['item_code'],
                 'item_description' => $comp['item_description'],
                 'item_uom' => $comp['item_uom'],

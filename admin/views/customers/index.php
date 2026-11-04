@@ -34,7 +34,7 @@
                     <td>
                         <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#customerEditModal" data-id="<?= $c['customer_id'] ?>" data-code="<?= htmlspecialchars($c['customer_code']) ?>" data-name="<?= htmlspecialchars($c['customer_name']) ?>" data-address="<?= htmlspecialchars($c['customer_address'] ?? '') ?>" data-tin="<?= htmlspecialchars($c['customer_tin'] ?? '') ?>" data-terms="<?= $c['customer_terms'] ?? 0 ?>"><i class="bi bi-pencil"></i></button>
                         <a href="?controller=admin&action=customerToggleStatus&id=<?= $c['customer_id'] ?>" class="btn btn-sm btn-warning"><i class="bi bi-toggle-on"></i></a>
-                        <a href="?controller=admin&action=customerDelete&id=<?= $c['customer_id'] ?>" class="btn btn-sm btn-danger" onclick="return confirm('Delete?')"><i class="bi bi-trash"></i></a>
+                        <a href="?controller=admin&action=customerDelete&id=<?= $c['customer_id'] ?>" class="btn btn-sm btn-danger" data-confirm="Delete?"><i class="bi bi-trash"></i></a>
                     </td>
                 </tr>
                 <?php endforeach; ?>

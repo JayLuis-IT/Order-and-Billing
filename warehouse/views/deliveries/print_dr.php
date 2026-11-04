@@ -228,11 +228,11 @@ document.getElementById('generateReceiptBtn').addEventListener('click', function
     const drNum = document.getElementById('drNumberInput').value.trim();
 
     if (!drNum) {
-        alert('Please enter a DR number first');
+        Dlg.alert('Please enter a DR number first');
         return;
     }
     if (!poId) {
-        alert('Please select a Purchase Order first');
+        Dlg.alert('Please select a Purchase Order first');
         return;
     }
 

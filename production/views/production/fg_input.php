@@ -313,7 +313,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 entry.style.borderColor = 'red';
                 if (!firstError) firstError = entry;
                 var lotLabel = lotNum || ('Lot entry #' + (idx + 1));
-                alert('Please complete all required fields (' + missing.join(', ') + ') for ' + lotLabel + '.');
+                Dlg.alert('Please complete all required fields (' + missing.join(', ') + ') for ' + lotLabel + '.');
             }
         });
 

@@ -132,6 +132,10 @@
                             <span class="badge bg-secondary">Partially Received</span>
                         <?php elseif ($status === 'for inspection'): ?>
                             <span class="badge text-white" style="background:#6f42c1">For Inspection</span>
+                        <?php elseif (($o['overage_request_status'] ?? '') === 'approved'): ?>
+                            <span class="badge bg-success">In-Transit (+<?= formatQty($o['overage_approved_qty'] ?? 0) ?> overage approved)</span>
+                        <?php elseif (($o['overage_request_status'] ?? '') === 'pending'): ?>
+                            <span class="badge bg-warning text-dark">Overage Awaiting Admin Approval</span>
                         <?php elseif ($status === 'received'): ?>
                             <span class="badge bg-success">Received & Approved</span>
                         <?php elseif ($status === 'rejected'): ?>
@@ -290,7 +294,7 @@
                     <div class="mb-3">
                         <label class="form-label fw-bold">Received Quantity <span class="text-danger">*</span></label>
                         <input type="number" name="received_qty" id="recvReceivedQty" class="form-control" min="0.0001" step="0.0001" required>
-                        <small class="text-muted">Enter the quantity actually received (may differ from ordered).</small>
+                        <small class="text-muted" id="recvQtyHint">Enter the quantity actually received (may differ from ordered).</small>
                     </div>
                     <div class="row mb-3" id="recvLotBatchRow">
                         <div class="col-md-6" id="recvLotBatchContainer">
@@ -365,7 +369,13 @@ document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('recvAlreadyReceived').textContent = fmtQty(received);
             document.getElementById('recvRemaining').textContent = fmtQty(remaining);
             document.getElementById('recvReceivedQty').value = fmtQty(remaining);
-            document.getElementById('recvReceivedQty').max = fmtQty(remaining);
+            // The remaining balance pre-fills but is NOT clamped: an over-receipt
+            // attempt is blocked server-side and becomes an approval request for
+            // the System Admin (see the In-Transit overage badges).
+            document.getElementById('recvReceivedQty').removeAttribute('max');
+            document.getElementById('recvQtyHint').innerHTML =
+                'Prefill = remaining balance (' + fmtQty(remaining) + '). Exact / partial receipts go straight to QC. '
+                + 'Quantities ABOVE the ordered total require System Admin overage approval before the shipment can reach QC.';
 
             // Lot / Batch + Expiry are required for RM, FG and SFG; hidden for PM / SUPPLIES.
             var itemType = (this.dataset.itemType || '').toUpperCase();
@@ -400,4 +410,4 @@ document.addEventListener('DOMContentLoaded', function() {
 <?php endif; ?>
 <?php $poEditContext = 'receiving'; require BASE_PATH . 'app/views/shared/po_view_modal.php'; ?>
 <?php $poEditContext = 'receiving'; require BASE_PATH . 'app/views/shared/po_edit_modal.php'; ?>
-<?php require BASE_PATH . 'app/views/shared/staging_edit_modal.php'; ?>
+<?php require BASE_PATH . 'app/views/shared/staging_edit_modal.php'; ?><?php require BASE_PATH . 'app/views/shared/table_enhancer.php'; ?>

@@ -1039,7 +1039,7 @@ document.querySelector('#createDeliveryModal form').addEventListener('submit', f
     var poSelect = document.getElementById('poSelect');
 
     if (!poSelect.value) {
-        alert('Please select a Purchase Order before creating a delivery.');
+        Dlg.alert('Please select a Purchase Order before creating a delivery.');
         return;
     }
 
@@ -1056,18 +1056,18 @@ document.querySelector('#createDeliveryModal form').addEventListener('submit', f
 
         if (qty <= 0) {
             hasError = true;
-            alert('Please enter a quantity for lot #' + lotId);
+            Dlg.alert('Please enter a quantity for lot #' + lotId);
             return;
         }
         if (qty > max) {
             hasError = true;
-            alert('Quantity ' + qty + ' exceeds max ' + max + ' for lot #' + lotId);
+            Dlg.alert('Quantity ' + qty + ' exceeds max ' + max + ' for lot #' + lotId);
             return;
         }
         if (conv > 0 && qty % conv !== 0) {
             hasError = true;
             var rem = qty % conv;
-            alert('Quantity for lot #' + lotId + ' is ' + qty + ' pcs, but ' + conv + ' pcs/case means ' + rem + ' pc' + (rem > 1 ? 's' : '') + ' excess.\n\nUse ' + (qty - rem) + ' or ' + (qty + (conv - rem)) + ' pcs.');
+            Dlg.alert('Quantity for lot #' + lotId + ' is ' + qty + ' pcs, but ' + conv + ' pcs/case means ' + rem + ' pc' + (rem > 1 ? 's' : '') + ' excess.\n\nUse ' + (qty - rem) + ' or ' + (qty + (conv - rem)) + ' pcs.');
             return;
         }
 
@@ -1093,7 +1093,7 @@ document.querySelector('#createDeliveryModal form').addEventListener('submit', f
     }
 
     if (lotPairs.length === 0) {
-        alert('Please select at least one lot');
+        Dlg.alert('Please select at least one lot');
         return;
     }
 
@@ -1111,7 +1111,7 @@ document.querySelector('#createDeliveryModal form').addEventListener('submit', f
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 if (data.exists) {
-                    alert('DR number "' + drNumber + '" already used. Try another DR number.');
+                    Dlg.alert('DR number "' + drNumber + '" already used. Try another DR number.');
                     return;
                 }
                 showDeliveryPreview();
@@ -1188,7 +1188,7 @@ document.getElementById('printDRBtn').addEventListener('click', function() {
 document.getElementById('drInputOkBtn').addEventListener('click', function() {
     var value = document.getElementById('drNumberInput').value.trim();
     if (value === '') {
-        alert('Please enter a DR number');
+        Dlg.alert('Please enter a DR number');
         return;
     }
     drState.drNumber = value;
@@ -1222,11 +1222,11 @@ document.getElementById('drConfirmYesBtn').addEventListener('click', function() 
             if (data.exists && data.po_ids && data.po_ids.length > 0) {
                 window.location.href = '?controller=warehouse&action=printDRPreview&dr_number=' + encodeURIComponent(drNumber) + '&po_id=' + data.po_ids[0];
             } else {
-                alert('Error: DR number "' + drNumber + '" not found. Please check the DR number and try again.');
+                Dlg.alert('Error: DR number "' + drNumber + '" not found. Please check the DR number and try again.');
             }
         })
         .catch(function() {
-            alert('Error: Could not verify DR number. Please try again.');
+            Dlg.alert('Error: Could not verify DR number. Please try again.');
     }).catch(function(err) {
         console.error('Promise.all error:', err);
     });
@@ -1327,24 +1327,26 @@ document.querySelectorAll('.viewDeliveryBtn').forEach(function(btn) {
 document.getElementById('viewDRPhotoContainer').addEventListener('click', function(e) {
     var btn = e.target.closest('.deleteReceiptBtn');
     if (!btn) return;
-    if (!confirm('Remove this attachment?')) return;
     var receiptId = btn.dataset.receiptId;
-    var formData = new FormData();
-    formData.append('receipt_id', receiptId);
-    fetch('?controller=warehouse&action=deleteDRPhoto', { method: 'POST', body: formData })
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-        if (data.success) {
-            var el = document.getElementById('receipt_' + receiptId);
-            if (el) el.remove();
-            if (!document.getElementById('viewDRPhotoContainer').children.length) {
-                document.getElementById('viewDRPhotoContainer').innerHTML = '<span class="text-muted">No attachments attached for this DR</span>';
+    Dlg.confirm('Remove this attachment?').then(function(ok) {
+        if (!ok) return;
+        var formData = new FormData();
+        formData.append('receipt_id', receiptId);
+        fetch('?controller=warehouse&action=deleteDRPhoto', { method: 'POST', body: formData })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.success) {
+                var el = document.getElementById('receipt_' + receiptId);
+                if (el) el.remove();
+                if (!document.getElementById('viewDRPhotoContainer').children.length) {
+                    document.getElementById('viewDRPhotoContainer').innerHTML = '<span class="text-muted">No attachments attached for this DR</span>';
+                }
+            } else {
+                Dlg.alert('Error: ' + (data.error || 'Failed to delete'));
             }
-        } else {
-            alert('Error: ' + (data.error || 'Failed to delete'));
-        }
-    })
-    .catch(function(err) { alert('Error: ' + err.message); });
+        })
+        .catch(function(err) { Dlg.alert('Error: ' + err.message); });
+    });
 });
 
 var reportDeliveryModal = null;
@@ -1372,7 +1374,7 @@ document.querySelectorAll('.reportDeliveryBtn').forEach(function(btn) {
             var selectedLotIndex = lotPicker.value;
 
             if (!remarks) {
-                alert('Please describe the concern');
+                Dlg.alert('Please describe the concern');
                 return;
             }
 
@@ -1385,7 +1387,7 @@ document.querySelectorAll('.reportDeliveryBtn').forEach(function(btn) {
 
             if (reportType === 'quantity') {
                 if (selectedLotIndex === '') {
-                    alert('Please select a lot');
+                    Dlg.alert('Please select a lot');
                     return;
                 }
                 var lot = reportLotItems[parseInt(selectedLotIndex)];
@@ -1406,11 +1408,11 @@ document.querySelectorAll('.reportDeliveryBtn').forEach(function(btn) {
                     cell.innerHTML = '<span style="color:red;font-weight:bold;">' + remarks.replace(/</g, '&lt;') + '</span>';
                     showToast('Report submitted successfully', 'success');
                 } else {
-                    alert('Error: ' + (data.error || 'Failed to submit report'));
+                    Dlg.alert('Error: ' + (data.error || 'Failed to submit report'));
                 }
             })
             .catch(function(err) {
-                alert('Error submitting report: ' + err.message);
+                Dlg.alert('Error submitting report: ' + err.message);
             });
         };
     });
@@ -1474,11 +1476,11 @@ drPhotoInput.addEventListener('change', function() {
 function handleDRFile(file) {
     var allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf'];
     if (!allowed.includes(file.type)) {
-        alert('Invalid file type. Allowed: JPG, PNG, GIF, WebP, PDF');
+        Dlg.alert('Invalid file type. Allowed: JPG, PNG, GIF, WebP, PDF');
         return;
     }
     if (file.size > 10 * 1024 * 1024) {
-        alert('File size must be less than 10MB');
+        Dlg.alert('File size must be less than 10MB');
         return;
     }
     selectedDRFile = file;
@@ -1510,7 +1512,7 @@ function handleDRFile(file) {
 
 document.getElementById('submitDRPhotoBtn').addEventListener('click', function() {
     if (!selectedDRFile) {
-        alert('Please select a file first');
+        Dlg.alert('Please select a file first');
         return;
     }
     var btn = this;
@@ -1537,13 +1539,13 @@ document.getElementById('submitDRPhotoBtn').addEventListener('click', function()
             if (pdfIcon) pdfIcon.remove();
             selectedDRFile = null;
         } else {
-            alert('Error: ' + (data.error || 'Failed to upload'));
+            Dlg.alert('Error: ' + (data.error || 'Failed to upload'));
         }
     })
     .catch(function(err) {
         btn.disabled = false;
         btn.innerHTML = '<i class="bi bi-upload me-1"></i>Upload';
-        alert('Error uploading file: ' + err.message);
+        Dlg.alert('Error uploading file: ' + err.message);
     });
 });
 
@@ -1664,7 +1666,7 @@ document.getElementById('submitBackloadBtn').addEventListener('click', function(
         var lotNum = row ? row.cells[1].textContent : '-';
 
         if (cs > maxCS) {
-            alert('Return quantity for "' + lotNum + '" (' + cs + ' CS) exceeds the delivered amount (' + maxCS + ' CS). Please correct it.');
+            Dlg.alert('Return quantity for "' + lotNum + '" (' + cs + ' CS) exceeds the delivered amount (' + maxCS + ' CS). Please correct it.');
             csInputs[i].focus();
             return;
         }
@@ -1674,14 +1676,14 @@ document.getElementById('submitBackloadBtn').addEventListener('click', function(
             totalPcs += pcs;
             previewRows.push({ item: itemDesc, lot: lotNum, pcs: pcs, cs: cs, reason: reason });
         } else if (pcs > 0 && !reason) {
-            alert('Please enter a reason for all returned quantities.');
+            Dlg.alert('Please enter a reason for all returned quantities.');
             reasons[i].focus();
             return;
         }
     }
 
     if (!hasValid) {
-        alert('Please enter a return quantity for at least one lot.');
+        Dlg.alert('Please enter a return quantity for at least one lot.');
         return;
     }
 
