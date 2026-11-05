@@ -1,5 +1,5 @@
 ﻿-- Manufacturing Management System Database Schema
--- Generated from the live `manufacturing_mgmt` database on 2026-10-13 (MariaDB 10.4.32).
+-- Generated from the live `manufacturing_mgmt` database on 2026-11-05 (MariaDB 10.4.32).
 -- Regenerate with:
 --   mysqldump -u root --no-data --skip-add-drop-table --routines=FALSE --triggers=FALSE manufacturing_mgmt
 -- Normalized for repo use: CREATE TABLE IF NOT EXISTS, AUTO_INCREMENT counters stripped,
@@ -25,7 +25,6 @@ USE manufacturing_mgmt;
 /*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
 
 --
--- NOTE: not used by application code (kept for history)
 -- Table structure for table `advance_production_consumption`
 --
 
@@ -114,6 +113,7 @@ CREATE TABLE IF NOT EXISTS `backloads` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
+--
 --
 -- Table structure for table `customers`
 --
@@ -301,7 +301,6 @@ CREATE TABLE IF NOT EXISTS `inventory_balances` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- NOTE: not used by application code (kept for history)
 -- Table structure for table `inventory_stock`
 --
 
@@ -357,6 +356,31 @@ CREATE TABLE IF NOT EXISTS `items` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Table structure for table `lmr_lot_allocations`
+--
+
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE IF NOT EXISTS `lmr_lot_allocations` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `lmr_id` int(11) NOT NULL,
+  `lri_id` int(11) DEFAULT NULL,
+  `item_id` int(11) NOT NULL,
+  `item_code` varchar(50) DEFAULT NULL,
+  `lot_number` varchar(100) NOT NULL,
+  `allocated_qty` decimal(15,4) NOT NULL DEFAULT 0.0000,
+  `status` enum('active','cancelled') NOT NULL DEFAULT 'active',
+  `created_by` int(11) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_lmr_lot_alloc_lmr` (`lmr_id`),
+  KEY `idx_lmr_lot_alloc_item_lot` (`item_id`,`lot_number`,`status`),
+  CONSTRAINT `fk_lmr_lot_alloc_lmr` FOREIGN KEY (`lmr_id`) REFERENCES `lmr_orders` (`lmr_id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
 -- Table structure for table `lmr_order_items`
 --
 
@@ -395,6 +419,9 @@ CREATE TABLE IF NOT EXISTS `lmr_orders` (
   `order_date` date DEFAULT NULL,
   `due_date` date DEFAULT NULL,
   `planned_start_date` date DEFAULT NULL,
+  `date_started` date DEFAULT NULL,
+  `date_finished` date DEFAULT NULL,
+  `expiry_date` date DEFAULT NULL,
   `priority` int(11) NOT NULL DEFAULT 3,
   `reference_no` varchar(100) DEFAULT NULL,
   `lmr_status` varchar(50) NOT NULL DEFAULT 'Planned',
@@ -402,12 +429,18 @@ CREATE TABLE IF NOT EXISTS `lmr_orders` (
   `customer_code` varchar(50) DEFAULT NULL,
   `customer_name` varchar(150) DEFAULT NULL,
   `batch_lot_no` varchar(100) DEFAULT NULL,
+  `lot_series` varchar(100) DEFAULT NULL,
+  `lot_number` varchar(100) DEFAULT NULL,
   `po_number` varchar(100) DEFAULT NULL,
+  `bom_code` varchar(50) DEFAULT NULL,
+  `item_code` varchar(50) DEFAULT NULL,
+  `item_description` varchar(255) DEFAULT NULL,
+  `qty_ordered` decimal(15,2) DEFAULT NULL,
   `created_by` int(11) DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
   PRIMARY KEY (`lmr_id`),
-  UNIQUE KEY `uk_lmr_orders_number` (`lmr_number`)
+  UNIQUE KEY `uk_manufacturing_orders_number` (`lmr_number`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -428,9 +461,9 @@ CREATE TABLE IF NOT EXISTS `mrp_allocations` (
   `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_lmr_item` (`lmr_id`,`item_id`),
-  KEY `idx_lmr_id` (`lmr_id`),
   KEY `idx_item_id` (`item_id`),
   KEY `idx_status` (`status`),
+  KEY `idx_lmr_id` (`lmr_id`),
   KEY `fk_alloc_lri` (`lri_id`),
   CONSTRAINT `fk_alloc_item` FOREIGN KEY (`item_id`) REFERENCES `items` (`item_id`) ON DELETE CASCADE,
   CONSTRAINT `fk_alloc_lmr` FOREIGN KEY (`lmr_id`) REFERENCES `lmr_orders` (`lmr_id`) ON DELETE CASCADE,
@@ -460,7 +493,7 @@ CREATE TABLE IF NOT EXISTS `mrp_run_items` (
   KEY `run_id` (`run_id`),
   KEY `fg_item_id` (`fg_item_id`),
   KEY `component_item_id` (`component_item_id`),
-  CONSTRAINT `mrp_run_items_ibfk_1` FOREIGN KEY (`run_id`) REFERENCES `mrp_runs` (`run_id`) ON DELETE CASCADE ON DELETE CASCADE,
+  CONSTRAINT `mrp_run_items_ibfk_1` FOREIGN KEY (`run_id`) REFERENCES `mrp_runs` (`run_id`) ON DELETE CASCADE,
   CONSTRAINT `mrp_run_items_ibfk_2` FOREIGN KEY (`fg_item_id`) REFERENCES `items` (`item_id`),
   CONSTRAINT `mrp_run_items_ibfk_3` FOREIGN KEY (`component_item_id`) REFERENCES `items` (`item_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
@@ -483,7 +516,7 @@ CREATE TABLE IF NOT EXISTS `mrp_runs` (
   `fg_code` varchar(50) DEFAULT NULL,
   `target_qty` decimal(15,4) DEFAULT NULL,
   `mrp_ref` varchar(30) DEFAULT NULL,
-  `approval_status` varchar(30) DEFAULT NULL COMMENT 'Zero-lacking runs: pending_whse_approval|pending_sysadmin_approval|pending_qc_approval|approved|cancelled',
+  `approval_status` varchar(30) DEFAULT NULL,
   PRIMARY KEY (`run_id`),
   KEY `po_id` (`po_id`),
   KEY `customer_id` (`customer_id`),
@@ -640,7 +673,6 @@ CREATE TABLE IF NOT EXISTS `production_lots` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- NOTE: not used by application code (kept for history)
 -- Table structure for table `production_orders`
 --
 
@@ -668,7 +700,7 @@ CREATE TABLE IF NOT EXISTS `production_orders` (
   CONSTRAINT `production_orders_ibfk_1` FOREIGN KEY (`po_id`) REFERENCES `purchase_orders` (`po_id`),
   CONSTRAINT `production_orders_ibfk_2` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`customer_id`),
   CONSTRAINT `production_orders_ibfk_3` FOREIGN KEY (`item_id`) REFERENCES `items` (`item_id`),
-  CONSTRAINT `production_orders_ibfk_4` FOREIGN KEY (`run_id`) REFERENCES `mrp_runs` (`run_id`) ON DELETE CASCADE,
+  CONSTRAINT `production_orders_ibfk_4` FOREIGN KEY (`run_id`) REFERENCES `mrp_runs` (`run_id`),
   CONSTRAINT `production_orders_ibfk_5` FOREIGN KEY (`created_by`) REFERENCES `users` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
@@ -797,9 +829,12 @@ CREATE TABLE IF NOT EXISTS `qc_analysis_reports` (
   `remarks` text DEFAULT NULL,
   `inspected_by` int(11) DEFAULT NULL,
   `date_inspected` datetime NOT NULL DEFAULT current_timestamp(),
+  `qty_used` decimal(15,4) NOT NULL DEFAULT 0.0000,
   PRIMARY KEY (`report_id`),
   KEY `idx_mrp_target` (`run_id`,`component_item_id`),
   KEY `idx_receiving_target` (`receiving_item_id`),
+  KEY `qc_analysis_reports_ibfk_2` (`component_item_id`),
+  KEY `qc_analysis_reports_ibfk_4` (`inspected_by`),
   CONSTRAINT `qc_analysis_reports_ibfk_1` FOREIGN KEY (`run_id`) REFERENCES `mrp_runs` (`run_id`) ON DELETE CASCADE,
   CONSTRAINT `qc_analysis_reports_ibfk_2` FOREIGN KEY (`component_item_id`) REFERENCES `items` (`item_id`),
   CONSTRAINT `qc_analysis_reports_ibfk_3` FOREIGN KEY (`receiving_item_id`) REFERENCES `receiving_items` (`id`) ON DELETE CASCADE,
@@ -819,12 +854,71 @@ CREATE TABLE IF NOT EXISTS `qc_inspections` (
   `decision` enum('PASSED','REJECTED') NOT NULL,
   `passed_qty` decimal(15,4) NOT NULL DEFAULT 0.0000,
   `rejected_qty` decimal(15,4) NOT NULL DEFAULT 0.0000,
+  `qty_used` decimal(15,4) NOT NULL DEFAULT 0.0000,
   `inspector_name` varchar(255) NOT NULL,
   `remarks` text DEFAULT NULL,
   `inspected_at` datetime NOT NULL DEFAULT current_timestamp(),
   PRIMARY KEY (`inspection_id`),
   KEY `idx_receiving_item_id` (`receiving_item_id`),
-  CONSTRAINT `fk_qc_receiving_item` FOREIGN KEY (`receiving_item_id`) REFERENCES `receiving_items` (`id`) ON DELETE CASCADE ON DELETE CASCADE
+  CONSTRAINT `fk_qc_receiving_item` FOREIGN KEY (`receiving_item_id`) REFERENCES `receiving_items` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `qc_pm_reports`
+--
+
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE IF NOT EXISTS `qc_pm_reports` (
+  `report_id` int(11) NOT NULL AUTO_INCREMENT,
+  `receiving_item_id` int(11) NOT NULL,
+  `pm_code` varchar(50) DEFAULT NULL,
+  `pm_name` varchar(255) DEFAULT NULL,
+  `supplier_name` varchar(150) DEFAULT NULL,
+  `rr_number` varchar(50) DEFAULT NULL,
+  `date_delivered` date DEFAULT NULL,
+  `date_tested` date DEFAULT NULL,
+  `quantity_delivered` decimal(15,4) DEFAULT NULL,
+  `sample_qty` varchar(50) DEFAULT NULL,
+  `dimensional_data` text DEFAULT NULL,
+  `result_dimensional` varchar(255) DEFAULT NULL,
+  `functional_data` text DEFAULT NULL,
+  `appearance_data` text DEFAULT NULL,
+  `total_reject_qty` decimal(15,4) DEFAULT NULL,
+  `total_reject_rate` varchar(50) DEFAULT NULL,
+  `disposition` enum('APPROVED','REJECTED','HOLD','WAIVED') NOT NULL,
+  `remarks` text DEFAULT NULL,
+  `inspected_by` int(11) DEFAULT NULL,
+  `date_inspected` datetime NOT NULL DEFAULT current_timestamp(),
+  `qty_used` decimal(15,4) NOT NULL DEFAULT 0.0000,
+  PRIMARY KEY (`report_id`),
+  KEY `idx_pm_receiving_target` (`receiving_item_id`),
+  KEY `qc_pm_reports_ibfk_2` (`inspected_by`),
+  CONSTRAINT `qc_pm_reports_ibfk_1` FOREIGN KEY (`receiving_item_id`) REFERENCES `receiving_items` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `qc_pm_reports_ibfk_2` FOREIGN KEY (`inspected_by`) REFERENCES `users` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `raw_materials`
+--
+
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE IF NOT EXISTS `raw_materials` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `item_code` varchar(50) NOT NULL,
+  `trade_name` varchar(255) NOT NULL,
+  `category` enum('raw_material','packaging') NOT NULL DEFAULT 'raw_material',
+  `uom` varchar(20) NOT NULL DEFAULT 'Kg',
+  `stock_on_hand` decimal(15,4) NOT NULL DEFAULT 0.0000,
+  `allocated_stock` decimal(15,4) NOT NULL DEFAULT 0.0000,
+  `reorder_level` decimal(15,4) NOT NULL DEFAULT 0.0000,
+  `is_active` tinyint(1) DEFAULT 1,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `item_code` (`item_code`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -845,6 +939,7 @@ CREATE TABLE IF NOT EXISTS `receiving_items` (
   `received_qty` decimal(10,4) NOT NULL DEFAULT 0.0000,
   `passed_qty` decimal(10,4) NOT NULL DEFAULT 0.0000,
   `rejected_qty` decimal(10,4) NOT NULL DEFAULT 0.0000,
+  `qty_used` decimal(15,4) NOT NULL DEFAULT 0.0000,
   `lot_number` varchar(100) DEFAULT NULL,
   `expiry_date` date DEFAULT NULL,
   `dr_invoice_no` varchar(100) DEFAULT NULL,
@@ -863,7 +958,6 @@ CREATE TABLE IF NOT EXISTS `receiving_items` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- NOTE: not used by application code (kept for history)
 -- Table structure for table `sales_orders`
 --
 
@@ -886,7 +980,6 @@ CREATE TABLE IF NOT EXISTS `sales_orders` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- NOTE: not used by application code (kept for history)
 -- Table structure for table `schema_migrations`
 --
 
@@ -919,6 +1012,7 @@ CREATE TABLE IF NOT EXISTS `stock_movements` (
   PRIMARY KEY (`movement_id`),
   KEY `idx_item_site` (`item_id`,`site_code`),
   KEY `idx_type_date` (`movement_type`,`date_created`),
+  KEY `stock_movements_ibfk_2` (`created_by`),
   CONSTRAINT `stock_movements_ibfk_1` FOREIGN KEY (`item_id`) REFERENCES `items` (`item_id`),
   CONSTRAINT `stock_movements_ibfk_2` FOREIGN KEY (`created_by`) REFERENCES `users` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
@@ -939,7 +1033,7 @@ CREATE TABLE IF NOT EXISTS `supplier_orders` (
   `unit_cost` decimal(15,2) DEFAULT 0.00,
   `order_date` date DEFAULT NULL,
   `expected_date` date DEFAULT NULL,
-  `status` varchar(50) DEFAULT 'pending',
+  `status` varchar(50) DEFAULT 'requested',
   `received_qty` decimal(15,4) DEFAULT 0.0000,
   `received_date` date DEFAULT NULL,
   `received_by` int(11) DEFAULT NULL,
@@ -953,12 +1047,16 @@ CREATE TABLE IF NOT EXISTS `supplier_orders` (
   `mrp_run_id` int(11) DEFAULT NULL,
   `mrp_ref` varchar(30) DEFAULT NULL,
   `po_group_id` int(11) DEFAULT NULL,
+  `overage_request_qty` decimal(15,4) DEFAULT NULL,
+  `overage_request_status` varchar(30) DEFAULT NULL,
+  `overage_approved_qty` decimal(15,4) DEFAULT NULL,
   PRIMARY KEY (`supplier_order_id`),
   KEY `item_id` (`item_id`),
   KEY `created_by` (`created_by`),
   KEY `idx_supplier_orders_mrp_run` (`mrp_run_id`),
-  KEY `idx_supplier_orders_po_group` (`po_group_id`),
   KEY `received_by` (`received_by`),
+  KEY `idx_supplier_orders_po_group` (`po_group_id`),
+  KEY `idx_supplier_orders_status_po` (`status`,`po_id`),
   CONSTRAINT `supplier_orders_ibfk_1` FOREIGN KEY (`item_id`) REFERENCES `items` (`item_id`),
   CONSTRAINT `supplier_orders_ibfk_2` FOREIGN KEY (`created_by`) REFERENCES `users` (`user_id`),
   CONSTRAINT `supplier_orders_ibfk_3` FOREIGN KEY (`received_by`) REFERENCES `users` (`user_id`)
@@ -978,11 +1076,12 @@ CREATE TABLE IF NOT EXISTS `users` (
   `password` varchar(255) NOT NULL,
   `full_name` varchar(255) NOT NULL,
   `department` enum('admin','warehouse','production','finance','qc','qa','rnd') NOT NULL,
-  `role` varchar(30) DEFAULT NULL COMMENT 'whse_admin|whse_officer|whse_ppic|whse_procurement|whse_receiving|qc_admin|qc_inspector',
+  `role` varchar(30) DEFAULT NULL,
   `status` tinyint(1) DEFAULT 1 COMMENT '0=inactive, 1=active',
   `remove` tinyint(1) DEFAULT 0 COMMENT '0=active, 1=soft deleted',
   `date_created` datetime DEFAULT current_timestamp(),
   `last_update` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `is_approver` tinyint(1) NOT NULL DEFAULT 0,
   PRIMARY KEY (`user_id`),
   UNIQUE KEY `username` (`username`),
   UNIQUE KEY `email` (`email`),
@@ -994,6 +1093,8 @@ CREATE TABLE IF NOT EXISTS `users` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+--
+--
 -- Final view structure for view `customer_finished_goods`
 --
 
@@ -1001,10 +1102,11 @@ CREATE TABLE IF NOT EXISTS `users` (
 /*!50001 SET @saved_cs_client          = @@character_set_client */;
 /*!50001 SET @saved_cs_results         = @@character_set_results */;
 /*!50001 SET @saved_col_connection     = @@collation_connection */;
-/*!50001 SET character_set_client      = cp850 */;
-/*!50001 SET character_set_results     = cp850 */;
-/*!50001 SET collation_connection      = cp850_general_ci */;
+/*!50001 SET character_set_client      = utf8mb4 */;
+/*!50001 SET character_set_results     = utf8mb4 */;
+/*!50001 SET collation_connection      = utf8mb4_general_ci */;
 /*!50001 CREATE ALGORITHM=UNDEFINED */
+/*!50013 DEFINER=`root`@`localhost` SQL SECURITY DEFINER */
 /*!50001 VIEW `customer_finished_goods` AS select `items`.`item_id` AS `item_id`,`items`.`item_code` AS `item_code`,`items`.`item_description` AS `item_description`,`items`.`item_type` AS `item_type`,`items`.`customer_id` AS `customer_id`,`items`.`item_uom` AS `item_uom`,`items`.`uom_conversion` AS `uom_conversion`,`items`.`item_size` AS `item_size`,`items`.`item_amount` AS `item_amount`,`items`.`date_created` AS `date_created`,`items`.`status` AS `status`,`items`.`remove` AS `remove`,`items`.`last_update` AS `last_update` from `items` where `items`.`item_type` = 'FG' and `items`.`customer_id` is not null and `items`.`customer_id` <> 0 */;
 /*!50001 SET character_set_client      = @saved_cs_client */;
 /*!50001 SET character_set_results     = @saved_cs_results */;
@@ -1022,13 +1124,13 @@ CREATE TABLE IF NOT EXISTS `users` (
 /*!50001 SET character_set_results     = utf8mb4 */;
 /*!50001 SET collation_connection      = utf8mb4_general_ci */;
 /*!50001 CREATE ALGORITHM=UNDEFINED */
+/*!50013 DEFINER=`root`@`localhost` SQL SECURITY DEFINER */
 /*!50001 VIEW `view_inventory_status` AS select `i`.`item_id` AS `item_id`,`i`.`item_code` AS `item_code`,`i`.`item_description` AS `item_description`,`i`.`item_type` AS `item_type`,`i`.`item_uom` AS `item_uom`,`i`.`reorder_level` AS `reorder_level`,coalesce(sum(`ib`.`qty_on_hand`),0) AS `total_soh`,coalesce(sum(`ib`.`qty_allocated`),0) AS `total_allocated`,coalesce(sum(`ib`.`qty_on_hand`),0) - coalesce(sum(`ib`.`qty_allocated`),0) AS `available_stock`,case when coalesce(sum(`ib`.`qty_on_hand`),0) - coalesce(sum(`ib`.`qty_allocated`),0) <= 0 then 'OUT OF STOCK' when coalesce(sum(`ib`.`qty_on_hand`),0) - coalesce(sum(`ib`.`qty_allocated`),0) <= `i`.`reorder_level` then 'LOW STOCK' else 'IN STOCK' end AS `inventory_status` from (`items` `i` left join `inventory_balances` `ib` on(`i`.`item_id` = `ib`.`item_id`)) group by `i`.`item_id` */;
 /*!50001 SET character_set_client      = @saved_cs_client */;
 /*!50001 SET character_set_results     = @saved_cs_results */;
 /*!50001 SET collation_connection      = @saved_col_connection */;
 
 --
--- NOTE: not used by application code (kept for history)
 -- Final view structure for view `vw_lmr_available_stock`
 --
 
@@ -1036,10 +1138,11 @@ CREATE TABLE IF NOT EXISTS `users` (
 /*!50001 SET @saved_cs_client          = @@character_set_client */;
 /*!50001 SET @saved_cs_results         = @@character_set_results */;
 /*!50001 SET @saved_col_connection     = @@collation_connection */;
-/*!50001 SET character_set_client      = cp850 */;
-/*!50001 SET character_set_results     = cp850 */;
-/*!50001 SET collation_connection      = cp850_general_ci */;
+/*!50001 SET character_set_client      = utf8mb4 */;
+/*!50001 SET character_set_results     = utf8mb4 */;
+/*!50001 SET collation_connection      = utf8mb4_general_ci */;
 /*!50001 CREATE ALGORITHM=UNDEFINED */
+/*!50013 DEFINER=`root`@`localhost` SQL SECURITY DEFINER */
 /*!50001 VIEW `vw_lmr_available_stock` AS select `inventory_stock`.`item_id` AS `item_id`,`inventory_stock`.`site_code` AS `site_code`,`inventory_stock`.`lot_number` AS `lot_number`,sum(`inventory_stock`.`qty_on_hand`) AS `available_qty`,max(`inventory_stock`.`updated_at`) AS `last_updated` from `inventory_stock` where `inventory_stock`.`status` = 'PASSED' and `inventory_stock`.`qty_on_hand` > 0 group by `inventory_stock`.`item_id`,`inventory_stock`.`site_code`,`inventory_stock`.`lot_number` */;
 /*!50001 SET character_set_client      = @saved_cs_client */;
 /*!50001 SET character_set_results     = @saved_cs_results */;
@@ -1054,4 +1157,4 @@ CREATE TABLE IF NOT EXISTS `users` (
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2026-10-13  8:53:16
+-- Dump completed on 2026-11-05 17:18:17
