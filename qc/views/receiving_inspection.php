@@ -68,6 +68,8 @@ function esc(s) {
                                 </td>
                                 <td class="text-end">
                                     <?php $prevReportId = (int) ($item['latest_report_id'] ?? 0); ?>
+                                    <?php $isPm = strtoupper((string) ($item['item_type'] ?? '')) === 'PM'; ?>
+                                    <?php $latestIsPm = !empty($item['latest_is_pm']); ?>
                                     <button type="button" class="btn btn-sm btn-outline-primary rc-inspect-btn"
                                             data-receiving-id="<?= $itemId ?>"
                                             data-rmname="<?= htmlspecialchars($item['item_description'] ?? '') ?>"
@@ -75,11 +77,15 @@ function esc(s) {
                                             data-lot="<?= htmlspecialchars($item['lot_number'] ?? '') ?>"
                                             data-delivered="<?= htmlspecialchars($item['received_date'] ?? '') ?>"
                                             data-report="<?= $prevReportId ?>"
-                                            title="Inspect (Raw Material Analysis Report)">
+                                            data-itemtype="<?= htmlspecialchars($item['item_type'] ?? '') ?>"
+                                            data-ispm="<?= $isPm ? '1' : '0' ?>"
+                                            data-latestisp="<?= $latestIsPm ? '1' : '0' ?>"
+                                            data-received-qty="<?= htmlspecialchars($item['received_qty'] ?? 0) ?>"
+                                            title="<?= $isPm ? 'Inspect (Packaging Material Inspection Report)' : 'Inspect (Raw Material Analysis Report)' ?>">
                                         <i class="bi bi-clipboard2-pulse me-1"></i>Inspect
                                     </button>
                                     <?php if ($prevReportId > 0): ?>
-                                    <a href="?controller=qc&action=printAnalysisReport&id=<?= $prevReportId ?>" target="_blank" class="btn btn-sm btn-outline-secondary" title="Print latest report">
+                                    <a href="?controller=qc&action=<?= $latestIsPm ? 'printPmReport' : 'printAnalysisReport' ?>&id=<?= $prevReportId ?>" target="_blank" class="btn btn-sm btn-outline-secondary" title="Print latest report">
                                         <i class="bi bi-printer"></i>
                                     </a>
                                     <?php endif; ?>
@@ -146,7 +152,8 @@ function esc(s) {
                                         <i class="bi bi-pencil"></i> Edit
                                     </button>
                                     <?php if (!empty($item['latest_report_id'])): ?>
-                                    <a href="?controller=qc&action=printAnalysisReport&id=<?= (int) $item['latest_report_id'] ?>" target="_blank" class="btn btn-sm btn-outline-dark" title="Print Analysis Report">
+                                    <?php $compIsPm = !empty($item['latest_is_pm']); ?>
+                                    <a href="?controller=qc&action=<?= $compIsPm ? 'printPmReport' : 'printAnalysisReport' ?>&id=<?= (int) $item['latest_report_id'] ?>" target="_blank" class="btn btn-sm btn-outline-dark" title="Print Inspection Report">
                                         <i class="bi bi-printer"></i> Report
                                     </a>
                                     <?php endif; ?>
@@ -163,15 +170,19 @@ function esc(s) {
 <?php $poEditContext = 'qc'; require BASE_PATH . 'app/views/shared/po_edit_modal.php'; ?>
 <?php $analysisFormAction = '?controller=qc&action=saveReceivingInspection'; ?>
 <?php require BASE_PATH . 'qc/views/analysis_report_form.php'; ?>
+<?php require BASE_PATH . 'qc/views/pm_report_form.php'; ?>
 <?php require BASE_PATH . 'app/views/shared/table_enhancer.php'; ?>
 
 <script>
 (function() {
-    // Inspect → open the Raw Material Analysis Report prefilled from the receipt
-    // (and the latest report, if a HOLD re-inspection).
+    // Inspect → open the appropriate report prefilled from the receipt.
+    // PM items get the Packaging Material Inspection Report (QCF-007);
+    // everything else gets the Raw Material Analysis Report (QCF-06).
     document.querySelectorAll('.rc-inspect-btn').forEach(function(btn) {
         btn.addEventListener('click', function() {
             var reportId = parseInt(this.dataset.report, 10) || 0;
+            var isPm = this.dataset.ispm === '1';
+            var latestIsPm = this.dataset.latestisp === '1';
             var opts = {
                 runId: '',
                 itemId: '',
@@ -181,8 +192,28 @@ function esc(s) {
                 lot: this.dataset.lot || '',
                 rr: '',
                 delivered: this.dataset.delivered || '',
-                oldExpiry: ''
+                oldExpiry: '',
+                receivedQty: this.dataset.receivedQty || ''
             };
+
+            if (isPm) {
+                // PM item → QCF-007 form
+                if (!reportId || !latestIsPm) {
+                    openPmReport(opts, null);
+                    return;
+                }
+                fetch('?controller=qc&action=getPmReport&id=' + reportId)
+                    .then(function(r) { return r.json(); })
+                    .then(function(res) {
+                        openPmReport(opts, res && res.success ? res.data : null);
+                    })
+                    .catch(function() {
+                        openPmReport(opts, null);
+                    });
+                return;
+            }
+
+            // Non-PM item → QCF-06 form
             if (!reportId) {
                 openAnalysisReport(opts, null);
                 return;

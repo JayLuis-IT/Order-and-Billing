@@ -128,6 +128,7 @@ $fmtDate = function ($d) {
             <div class="qcf-field-row"><span class="qcf-field-label">Date Delivered</span>:<span class="qcf-field-value"><?= htmlspecialchars($fmtDate($report['date_delivered'] ?? '')) ?></span></div>
             <div class="qcf-field-row"><span class="qcf-field-label">Date Tested</span>:<span class="qcf-field-value"><?= htmlspecialchars($fmtDate($report['date_tested'] ?? '')) ?></span></div>
             <div class="qcf-field-row"><span class="qcf-field-label">Expiry Date</span>:<span class="qcf-field-value"><?= htmlspecialchars($fmtDate($report['expiry_date'] ?? '')) ?></span></div>
+            <div class="qcf-field-row"><span class="qcf-field-label">Qty Used for Inspection</span>:<span class="qcf-field-value"><?= htmlspecialchars($report['qty_used'] ?? '0') ?></span></div>
         </div>
     </div>
 
@@ -178,7 +179,7 @@ $fmtDate = function ($d) {
     <!-- Official footer: Inspected By/Date + Reviewed By/Date -->
     <div class="qcf-footer">
         <div class="qcf-sig">
-            <div class="qcf-sig-row">Inspected By/Date: <?= htmlspecialchars($report['inspector_name'] ?? '') ?>, <?= htmlspecialchars($fmtDate($report['date_inspected'] ?? $report['date_tested'] ?? '')) ?></div>
+            <div class="qcf-sig-row">Inspected By/Date:</div>
             <div class="qcf-sig-caption">Signature over Printed name</div>
         </div>
         <div class="qcf-sig">

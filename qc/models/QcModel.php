@@ -121,8 +121,10 @@ class QcModel extends BaseModel {
                     ri.supplier_order_id,
                     so.mrp_ref,
                     i.item_id,
-                    car.report_id AS latest_report_id,
-                    car.disposition AS latest_disposition
+                    i.item_type,
+                    COALESCE(car.report_id, cpm.report_id) AS latest_report_id,
+                    COALESCE(car.disposition, cpm.disposition) AS latest_disposition,
+                    CASE WHEN car.report_id IS NULL AND cpm.report_id IS NOT NULL THEN 1 ELSE 0 END AS latest_is_pm
                 FROM receiving_items ri
                 LEFT JOIN items i ON ri.item_code = i.item_code
                 LEFT JOIN supplier_orders so ON so.supplier_order_id = ri.supplier_order_id
@@ -130,6 +132,11 @@ class QcModel extends BaseModel {
                     SELECT car2.report_id FROM qc_analysis_reports car2
                     WHERE car2.receiving_item_id = ri.id
                     ORDER BY car2.date_inspected DESC, car2.report_id DESC LIMIT 1
+                )
+                LEFT JOIN qc_pm_reports cpm ON cpm.report_id = (
+                    SELECT cpm2.report_id FROM qc_pm_reports cpm2
+                    WHERE cpm2.receiving_item_id = ri.id
+                    ORDER BY cpm2.date_inspected DESC, cpm2.report_id DESC LIMIT 1
                 )
                 WHERE ri.qc_status IN ('PENDING_QC', 'HOLD')
                 ORDER BY ri.received_date ASC, ri.id ASC";
@@ -159,8 +166,10 @@ class QcModel extends BaseModel {
                     ri.supplier_order_id,
                     so.mrp_ref,
                     i.item_id,
-                    car.report_id AS latest_report_id,
-                    car.disposition AS latest_disposition
+                    i.item_type,
+                    COALESCE(car.report_id, cpm.report_id) AS latest_report_id,
+                    COALESCE(car.disposition, cpm.disposition) AS latest_disposition,
+                    CASE WHEN car.report_id IS NULL AND cpm.report_id IS NOT NULL THEN 1 ELSE 0 END AS latest_is_pm
                 FROM receiving_items ri
                 LEFT JOIN items i ON ri.item_code = i.item_code
                 LEFT JOIN supplier_orders so ON so.supplier_order_id = ri.supplier_order_id
@@ -168,6 +177,11 @@ class QcModel extends BaseModel {
                     SELECT car2.report_id FROM qc_analysis_reports car2
                     WHERE car2.receiving_item_id = ri.id
                     ORDER BY car2.date_inspected DESC, car2.report_id DESC LIMIT 1
+                )
+                LEFT JOIN qc_pm_reports cpm ON cpm.report_id = (
+                    SELECT cpm2.report_id FROM qc_pm_reports cpm2
+                    WHERE cpm2.receiving_item_id = ri.id
+                    ORDER BY cpm2.date_inspected DESC, cpm2.report_id DESC LIMIT 1
                 )
                 WHERE ri.qc_status IN ('PASSED', 'REJECTED')
                 ORDER BY ri.inspected_at DESC, ri.id DESC";
@@ -413,6 +427,7 @@ class QcModel extends BaseModel {
         $receivedQty = (float) ($data['received_qty'] ?? 0);
         $passedQty = (float) ($data['passed_qty'] ?? 0);
         $rejectedQty = (float) ($data['rejected_qty'] ?? 0);
+        $qtyUsed = max(0, (float) ($data['qty_used'] ?? 0));
         $inspectorName = trim((string) ($data['inspector_name'] ?? ''));
         $remarks = trim((string) ($data['remarks'] ?? ''));
 
@@ -425,8 +440,11 @@ class QcModel extends BaseModel {
         if ($receivedQty <= 0) {
             throw new \RuntimeException('Received quantity must be greater than zero.');
         }
-        if (abs(($passedQty + $rejectedQty) - $receivedQty) > 0.0001) {
-            throw new \RuntimeException('Passed + rejected quantities must equal the received quantity.');
+        if ($qtyUsed >= $receivedQty) {
+            throw new \RuntimeException('Qty used for inspection must be less than the received quantity.');
+        }
+        if (abs(($passedQty + $rejectedQty + $qtyUsed) - $receivedQty) > 0.0001) {
+            throw new \RuntimeException('Passed + rejected + used quantities must equal the received quantity.');
         }
         if ($decision === 'PASSED' && $passedQty <= 0) {
             throw new \RuntimeException('Passed quantity must be greater than zero for accepted goods.');
@@ -469,15 +487,16 @@ class QcModel extends BaseModel {
             $inspectorUserId = (int) ($_SESSION['user_id'] ?? 0);
 
             $insStmt = $conn->prepare("INSERT INTO qc_inspections (
-                    receiving_item_id, decision, passed_qty, rejected_qty, inspector_name, remarks, inspected_at
+                    receiving_item_id, decision, passed_qty, rejected_qty, qty_used, inspector_name, remarks, inspected_at
                 ) VALUES (
-                    :receiving_item_id, :decision, :passed_qty, :rejected_qty, :inspector_name, :remarks, NOW()
+                    :receiving_item_id, :decision, :passed_qty, :rejected_qty, :qty_used, :inspector_name, :remarks, NOW()
                 )");
             $insStmt->execute([
                 'receiving_item_id' => $receivingItemId,
                 'decision' => $decision,
                 'passed_qty' => $passedQty,
                 'rejected_qty' => $rejectedQty,
+                'qty_used' => $qtyUsed,
                 'inspector_name' => $inspectorName,
                 'remarks' => $remarks,
             ]);
@@ -488,7 +507,8 @@ class QcModel extends BaseModel {
                     inspected_at = NOW(),
                     remarks = :remarks,
                     passed_qty = :passed_qty,
-                    rejected_qty = :rejected_qty
+                    rejected_qty = :rejected_qty,
+                    qty_used = :qty_used
                 WHERE id = :receiving_item_id");
             $updateStmt->execute([
                 'status' => $finalStatus,
@@ -496,6 +516,7 @@ class QcModel extends BaseModel {
                 'remarks' => $remarks,
                 'passed_qty' => $passedQty,
                 'rejected_qty' => $rejectedQty,
+                'qty_used' => $qtyUsed,
                 'receiving_item_id' => $receivingItemId,
             ]);
 
@@ -514,7 +535,9 @@ class QcModel extends BaseModel {
                 }
             }
 
-            $qtyToRelease = $decision === 'PASSED' ? $passedQty : $rejectedQty;
+            // Release the FULL batch from the inspection-hold bucket:
+            // passed + rejected + qty_used = received.
+            $qtyToRelease = $passedQty + $rejectedQty + $qtyUsed;
             if ($qtyToRelease > 0) {
                 $conn->prepare("UPDATE inventory_balances
                     SET qty_for_inspect = GREATEST(qty_for_inspect - :qty_to_release, 0)
@@ -522,6 +545,21 @@ class QcModel extends BaseModel {
                     'qty_to_release' => $qtyToRelease,
                     'item_id' => $itemId,
                     'site_code' => self::DEFAULT_SITE_CODE,
+                ]);
+            }
+
+            // Log inspection usage as a stock_movements OUT row for audit.
+            // No adjustSohDelta call — the goods were in qty_for_inspect, not
+            // qty_on_hand, so SOH is unaffected by the consumption.
+            if ($qtyUsed > 0) {
+                $conn->prepare("INSERT INTO stock_movements (movement_type, item_id, site_code, qty, reference_type, reference_no, remarks, created_by)
+                    VALUES ('OUT', :item_id, :site_code, :qty, 'qc_inspection', :ref_no, :remarks, :created_by)")->execute([
+                    'item_id' => $itemId,
+                    'site_code' => self::DEFAULT_SITE_CODE,
+                    'qty' => $qtyUsed,
+                    'ref_no' => 'QC-' . $receivingItemId,
+                    'remarks' => 'Qty used for QC inspection — receiving item #' . $receivingItemId,
+                    'created_by' => $inspectorUserId ?: null,
                 ]);
             }
 
@@ -643,6 +681,7 @@ class QcModel extends BaseModel {
             'delivery_type' => $deliveryType,
             'disposition' => $disposition,
             'remarks' => trim((string) ($data['remarks'] ?? '')) ?: null,
+            'qty_used' => ($data['qty_used'] ?? null) !== null && $data['qty_used'] !== '' ? (float) $data['qty_used'] : 0,
             'inspected_by' => (int) ($_SESSION['user_id'] ?? 0) ?: null,
         ];
         foreach (['appearance', 'color', 'odor', 'texture', 'ph', 'viscosity', 'sg', 'solubility', 'alcohol', 'microbial'] as $param) {
@@ -711,13 +750,113 @@ class QcModel extends BaseModel {
         return $stmt->fetch() ?: false;
     }
 
+    // ─── Packaging Material Inspection Report (QCF-007) ──────────────────────
+
+    /**
+     * Save one PM inspection report row. Requires receiving_item_id and a
+     * valid disposition. Dimensional / functional / appearance sections are
+     * stored as JSON-encoded TEXT columns.
+     */
+    public function savePmReport(array $data) {
+        $receivingItemId = (int) ($data['receiving_item_id'] ?? 0);
+        if ($receivingItemId <= 0) {
+            throw new \RuntimeException('Receiving item is required.');
+        }
+        $disposition = strtoupper(trim((string) ($data['disposition'] ?? '')));
+        if (!in_array($disposition, ['APPROVED', 'REJECTED', 'HOLD', 'WAIVED'], true)) {
+            throw new \RuntimeException('Disposition must be Approved, Rejected, Hold, or Waived.');
+        }
+        $pmName = trim((string) ($data['pm_name'] ?? ''));
+        if ($pmName === '') {
+            throw new \RuntimeException('PM Name is required.');
+        }
+
+        $params = [
+            'receiving_item_id' => $receivingItemId,
+            'pm_code' => trim((string) ($data['pm_code'] ?? '')) ?: null,
+            'pm_name' => $pmName,
+            'supplier_name' => trim((string) ($data['supplier_name'] ?? '')) ?: null,
+            'rr_number' => trim((string) ($data['rr_number'] ?? '')) ?: null,
+            'date_delivered' => $this->nullableDate($data['date_delivered'] ?? null),
+            'date_tested' => $this->nullableDate($data['date_tested'] ?? null) ?: date('Y-m-d'),
+            'quantity_delivered' => ($data['quantity_delivered'] ?? null) !== null && $data['quantity_delivered'] !== '' ? (float) $data['quantity_delivered'] : null,
+            'sample_qty' => trim((string) ($data['sample_qty'] ?? '')) ?: null,
+            'dimensional_data' => $this->encodeJsonColumn($data['dimensional_data'] ?? null),
+            'result_dimensional' => trim((string) ($data['result_dimensional'] ?? '')) ?: null,
+            'functional_data' => $this->encodeJsonColumn($data['functional_data'] ?? null),
+            'appearance_data' => $this->encodeJsonColumn($data['appearance_data'] ?? null),
+            'total_reject_qty' => ($data['total_reject_qty'] ?? null) !== null && $data['total_reject_qty'] !== '' ? (float) $data['total_reject_qty'] : null,
+            'total_reject_rate' => trim((string) ($data['total_reject_rate'] ?? '')) ?: null,
+            'disposition' => $disposition,
+            'remarks' => trim((string) ($data['remarks'] ?? '')) ?: null,
+            'qty_used' => ($data['qty_used'] ?? null) !== null && $data['qty_used'] !== '' ? (float) $data['qty_used'] : 0,
+            'inspected_by' => (int) ($_SESSION['user_id'] ?? 0) ?: null,
+        ];
+
+        $columns = array_keys($params);
+        $sql = 'INSERT INTO qc_pm_reports (' . implode(', ', $columns) . ')
+                VALUES (' . implode(', ', array_map(function ($c) {
+                    return ':' . $c;
+                }, $columns)) . ')';
+        $stmt = self::getConnection()->prepare($sql);
+        $stmt->execute($params);
+        return (int) self::getConnection()->lastInsertId();
+    }
+
+    /** Full PM report row by id (for the printable page / JSON prefill). */
+    public function getPmReport($reportId) {
+        $stmt = self::getConnection()->prepare(
+            "SELECT cpm.*, u.full_name AS inspector_name
+             FROM qc_pm_reports cpm
+             LEFT JOIN users u ON u.user_id = cpm.inspected_by
+             WHERE cpm.report_id = :id"
+        );
+        $stmt->execute(['id' => (int) $reportId]);
+        $row = $stmt->fetch() ?: false;
+        if ($row) {
+            $row['dimensional_data'] = json_decode($row['dimensional_data'] ?? '', true) ?: [];
+            $row['functional_data'] = json_decode($row['functional_data'] ?? '', true) ?: [];
+            $row['appearance_data'] = json_decode($row['appearance_data'] ?? '', true) ?: [];
+        }
+        return $row;
+    }
+
+    /** Latest PM report for one receiving item (HOLD re-inspection prefill). */
+    public function getLatestPmReport($receivingItemId) {
+        $stmt = self::getConnection()->prepare(
+            "SELECT cpm.* FROM qc_pm_reports cpm
+             WHERE cpm.receiving_item_id = :id
+             ORDER BY cpm.date_inspected DESC, cpm.report_id DESC LIMIT 1"
+        );
+        $stmt->execute(['id' => (int) $receivingItemId]);
+        $row = $stmt->fetch() ?: false;
+        if ($row) {
+            $row['dimensional_data'] = json_decode($row['dimensional_data'] ?? '', true) ?: [];
+            $row['functional_data'] = json_decode($row['functional_data'] ?? '', true) ?: [];
+            $row['appearance_data'] = json_decode($row['appearance_data'] ?? '', true) ?: [];
+        }
+        return $row;
+    }
+
+    private function encodeJsonColumn($value) {
+        if ($value === null || $value === '' || $value === []) {
+            return null;
+        }
+        if (is_string($value)) {
+            // Already JSON string — validate then return as-is.
+            json_decode($value, true);
+            return json_last_error() === JSON_ERROR_NONE ? $value : json_encode([]);
+        }
+        return json_encode($value, JSON_UNESCAPED_UNICODE);
+    }
+
     /**
      * Apply a receiving-item disposition alongside its analysis report:
      *   APPROVED / WAIVED → PASSED (release to SOH, waive = accept without full test)
      *   REJECTED          → REJECTED (exclude from SOH)
      *   HOLD              → HOLD (stays in the queue for re-inspection)
      */
-    public function applyReceivingDisposition($receivingItemId, $disposition, $remarks = '') {
+    public function applyReceivingDisposition($receivingItemId, $disposition, $remarks = '', $qtyUsed = 0) {
         $item = $this->getReceivingItemById($receivingItemId);
         if (!$item) {
             throw new \RuntimeException('Receiving item not found.');
@@ -738,13 +877,16 @@ class QcModel extends BaseModel {
         }
 
         $receivedQty = (float) ($item['received_qty'] ?? 0);
+        $qtyUsed = max(0, min((float) $qtyUsed, $receivedQty - 0.0001));
+        $availableQty = $receivedQty - $qtyUsed;
         $decision = ($disposition === 'REJECTED') ? 'REJECTED' : 'PASSED';
         return $this->recordQcInspection([
             'receiving_item_id' => (int) $receivingItemId,
             'decision' => $decision,
             'received_qty' => $receivedQty,
-            'passed_qty' => $decision === 'PASSED' ? $receivedQty : 0,
-            'rejected_qty' => $decision === 'REJECTED' ? $receivedQty : 0,
+            'passed_qty' => $decision === 'PASSED' ? $availableQty : 0,
+            'rejected_qty' => $decision === 'REJECTED' ? $availableQty : 0,
+            'qty_used' => $qtyUsed,
             'inspector_name' => $_SESSION['full_name'] ?? 'QC',
             'remarks' => $remarks,
         ]);

@@ -314,8 +314,9 @@ class QcController {
             }
             $receivingItemId = intval($_POST['receiving_item_id'] ?? 0);
             $disposition = strtoupper(trim((string) ($_POST['disposition'] ?? '')));
+            $qtyUsed = (float) ($_POST['qty_used'] ?? 0);
             $reportId = $this->qcModel->saveAnalysisReport($this->inspectionPayloadFromPost('receiving'));
-            $result = $this->qcModel->applyReceivingDisposition($receivingItemId, $disposition, trim((string) ($_POST['remarks'] ?? '')));
+            $result = $this->qcModel->applyReceivingDisposition($receivingItemId, $disposition, trim((string) ($_POST['remarks'] ?? '')), $qtyUsed);
             AuditModel::log($_SESSION['user_id'], 'INSPECT', 'qc',
                 "Receiving inspection — receiving item #{$receivingItemId}, report #{$reportId}, disposition {$disposition}",
                 null, ['qc_status' => $result['decision'] ?? $disposition], 'receiving_item', $receivingItemId);
@@ -369,6 +370,149 @@ class QcController {
         exit;
     }
 
+    // ─── Packaging Material Inspection Report (QCF-007) ──────────────────────
+
+    /** Save one PM Inspection Report (Receiving context) + apply disposition. */
+    public function savePmInspection() {
+        try {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                throw new \RuntimeException('POST required.');
+            }
+            $receivingItemId = intval($_POST['receiving_item_id'] ?? 0);
+            $disposition = strtoupper(trim((string) ($_POST['disposition'] ?? '')));
+
+            $payload = [
+                'receiving_item_id' => $receivingItemId,
+                'pm_code' => trim((string) ($_POST['pm_code'] ?? '')),
+                'pm_name' => trim((string) ($_POST['pm_name'] ?? '')),
+                'supplier_name' => trim((string) ($_POST['supplier_name'] ?? '')),
+                'rr_number' => trim((string) ($_POST['rr_number'] ?? '')),
+                'date_delivered' => trim((string) ($_POST['date_delivered'] ?? '')),
+                'date_tested' => trim((string) ($_POST['date_tested'] ?? '')),
+                'quantity_delivered' => trim((string) ($_POST['quantity_delivered'] ?? '')),
+                'sample_qty' => trim((string) ($_POST['sample_qty'] ?? '')),
+                'result_dimensional' => trim((string) ($_POST['result_dimensional'] ?? '')),
+                'total_reject_qty' => trim((string) ($_POST['total_reject_qty'] ?? '')),
+                'total_reject_rate' => trim((string) ($_POST['total_reject_rate'] ?? '')),
+                'disposition' => $disposition,
+                'remarks' => trim((string) ($_POST['remarks'] ?? '')),
+                'qty_used' => trim((string) ($_POST['qty_used'] ?? '')),
+            ];
+
+            // Dimensional rows: dim_name[], dim_specs[], dim_uom[], dim_samples[10][]
+            $dimNames = (array) ($_POST['dim_name'] ?? []);
+            $dimSpecs = (array) ($_POST['dim_specs'] ?? []);
+            $dimUoms  = (array) ($_POST['dim_uom'] ?? []);
+            $dimSamples = (array) ($_POST['dim_samples'] ?? []);
+            $dimensional = [];
+            foreach ($dimNames as $idx => $name) {
+                $name = trim((string) $name);
+                if ($name === '' && trim((string) ($dimSpecs[$idx] ?? '')) === '') {
+                    continue;
+                }
+                $samples = [];
+                for ($s = 1; $s <= 10; $s++) {
+                    $samples[] = trim((string) ($dimSamples[$idx][$s] ?? ''));
+                }
+                $dimensional[] = [
+                    'dimension' => $name,
+                    'specifications' => trim((string) ($dimSpecs[$idx] ?? '')),
+                    'uom' => trim((string) ($dimUoms[$idx] ?? '')),
+                    'samples' => $samples,
+                ];
+            }
+            $payload['dimensional_data'] = $dimensional;
+
+            // Functional rows: func_test[] labels (fixed 6), func_result[], func_qty[]
+            $funcResults = (array) ($_POST['func_result'] ?? []);
+            $funcQtys = (array) ($_POST['func_qty'] ?? []);
+            $funcTests = ['Pump/Spray Test', 'Leak Test', 'Drop test', 'Adhesion Test', 'Tape Test', 'Others'];
+            $functional = [];
+            foreach ($funcTests as $idx => $test) {
+                $functional[] = [
+                    'test' => $test,
+                    'result' => trim((string) ($funcResults[$idx] ?? '')),
+                    'qty' => trim((string) ($funcQtys[$idx] ?? '')),
+                ];
+            }
+            $payload['functional_data'] = $functional;
+
+            // Appearance rows: app_name[], app_result[], app_qty[]
+            $appNames = (array) ($_POST['app_name'] ?? []);
+            $appResults = (array) ($_POST['app_result'] ?? []);
+            $appQtys = (array) ($_POST['app_qty'] ?? []);
+            $appearance = [];
+            foreach ($appNames as $idx => $name) {
+                $name = trim((string) $name);
+                $result = trim((string) ($appResults[$idx] ?? ''));
+                $qty = trim((string) ($appQtys[$idx] ?? ''));
+                if ($name === '' && $result === '' && $qty === '') {
+                    continue;
+                }
+                $appearance[] = [
+                    'defect_name' => $name,
+                    'result' => $result,
+                    'qty' => $qty,
+                ];
+            }
+            $payload['appearance_data'] = $appearance;
+
+            $reportId = $this->qcModel->savePmReport($payload);
+            $qtyUsed = (float) ($_POST['qty_used'] ?? 0);
+            $result = $this->qcModel->applyReceivingDisposition($receivingItemId, $disposition, $payload['remarks'], $qtyUsed);
+            AuditModel::log($_SESSION['user_id'], 'INSPECT', 'qc',
+                "PM receiving inspection — receiving item #{$receivingItemId}, report #{$reportId}, disposition {$disposition}",
+                null, ['qc_status' => $result['decision'] ?? $disposition], 'receiving_item', $receivingItemId);
+
+            if (($result['decision'] ?? '') === 'HOLD') {
+                $_SESSION['success'] = 'PM inspection saved — item placed ON HOLD and kept in the queue for re-inspection.';
+            } else {
+                $_SESSION['success'] = 'PM inspection ' . strtolower((string) ($result['decision'] ?? $disposition))
+                    . ' — stock status updated.';
+            }
+            if (!empty($_POST['save_and_print'])) {
+                header('Location: ?controller=qc&action=printPmReport&id=' . $reportId);
+                exit;
+            }
+        } catch (\Exception $e) {
+            $_SESSION['error'] = $e->getMessage();
+        }
+        header('Location: ?controller=qc&action=receivingInspection');
+        exit;
+    }
+
+    /** Printable Packaging Material Inspection Report (QCF-007). */
+    public function printPmReport() {
+        $reportId = intval($_GET['id'] ?? 0);
+        $report = $reportId > 0 ? $this->qcModel->getPmReport($reportId) : false;
+        if (!$report) {
+            $_SESSION['error'] = 'PM inspection report not found.';
+            header('Location: ?controller=qc');
+            exit;
+        }
+        $data['report'] = $report;
+        $data['page_title'] = 'Packaging Material Inspection Report';
+        $this->render('pm_report_print', $data);
+    }
+
+    /** JSON: one PM report (Inspect prefill / re-inspection). */
+    public function getPmReport() {
+        header('Content-Type: application/json');
+        $reportId = intval($_GET['id'] ?? 0);
+        try {
+            $report = $reportId > 0 ? $this->qcModel->getPmReport($reportId) : false;
+            if (!$report) {
+                echo json_encode(['success' => false, 'error' => 'Report not found.']);
+            } else {
+                echo json_encode(['success' => true, 'data' => $report]);
+            }
+        } catch (\Exception $e) {
+            http_response_code(500);
+            echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+        }
+        exit;
+    }
+
     /**
      * Map POST fields (shared report form) to saveAnalysisReport input.
      * $context: 'mrp' (run_id + component_item_id) or 'receiving' (receiving_item_id).
@@ -386,6 +530,7 @@ class QcController {
             'delivery_type' => trim((string) ($_POST['delivery_type'] ?? 'new_delivery')),
             'disposition' => strtoupper(trim((string) ($_POST['disposition'] ?? ''))),
             'remarks' => trim((string) ($_POST['remarks'] ?? '')),
+            'qty_used' => trim((string) ($_POST['qty_used'] ?? '')),
         ];
         foreach (['appearance', 'color', 'odor', 'texture', 'ph', 'viscosity', 'sg', 'solubility', 'alcohol', 'microbial'] as $param) {
             $payload[$param . '_spec'] = trim((string) ($_POST[$param . '_spec'] ?? ''));

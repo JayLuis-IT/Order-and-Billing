@@ -212,6 +212,10 @@
                                 <span class="qcf-field-label">Expiry Date</span><span class="qcf-colon">:</span>
                                 <input type="date" name="expiry_date" id="arExpiry" class="form-control form-control-sm border-0 border-bottom rounded-0">
                             </div>
+                            <div class="qcf-field-row">
+                                <span class="qcf-field-label">Qty Used for Inspection</span><span class="qcf-colon">:</span>
+                                <input type="number" name="qty_used" id="arQtyUsed" class="form-control form-control-sm border-0 border-bottom rounded-0" min="0" step="any" placeholder="0">
+                            </div>
                         </div>
                     </div>
 
@@ -342,6 +346,7 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('arDateDelivered').value = opts.delivered || '';
         document.getElementById('arOldExpiry').value = opts.oldExpiry || '';
         document.getElementById('arDateTested').value = '<?= date('Y-m-d') ?>';
+        document.getElementById('arQtyUsed').value = '0';
 
         document.querySelectorAll('.ar-delivery-type').forEach(function(b) { b.checked = b.value === 'new_delivery'; });
         document.querySelectorAll('.ar-disposition').forEach(function(b) { b.checked = false; });
@@ -354,6 +359,7 @@ document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('arOldExpiry').value = previous.old_expiry_date || '';
             document.getElementById('arDateTested').value = previous.date_tested || '<?= date('Y-m-d') ?>';
             document.getElementById('arExpiry').value = previous.expiry_date || '';
+            document.getElementById('arQtyUsed').value = previous.qty_used || '0';
             document.getElementById('arRemarks').value = previous.remarks || '';
             document.querySelectorAll('.ar-delivery-type').forEach(function(b) {
                 b.checked = b.value === (previous.delivery_type || 'new_delivery');
