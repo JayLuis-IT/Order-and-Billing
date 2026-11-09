@@ -138,8 +138,11 @@ class LmrModel extends BaseModel {
     /**
      * FIFO lot list for one component item, sourced from inventory_stock
      * (per-lot rows written by QC receiving) and joined to receiving_items
-     * for the received / expiry dates. Available per lot = on hand - blocked
-     * - already reserved by other active LMR lot allocations.
+     * for the received / expiry dates. ALL PASSED lots are returned —
+     * fully-reserved lots included (reserved_qty shown, available_qty 0) —
+     * so the modal always reconciles with the item's total SOH.
+     * Available per lot = on hand - blocked - already reserved by other
+     * active LMR lot allocations.
      * Sorted oldest receipt first so FIFO rotation is front of the list.
      */
     public function getAvailableLotsForItem($itemId, $excludeLmrId = null) {
@@ -154,6 +157,7 @@ class LmrModel extends BaseModel {
                    SUM(GREATEST(s.qty_on_hand - s.qty_blocked, 0)) AS raw_qty,
                    MAX(r.received_date) AS received_date,
                    MIN(r.expiry_date) AS expiry_date,
+                   COALESCE(ua.allocated_qty, 0) AS reserved_qty,
                    COALESCE(SUM(GREATEST(s.qty_on_hand - s.qty_blocked, 0)), 0) -
                    COALESCE(ua.allocated_qty, 0) AS available_qty
             FROM inventory_stock s
@@ -168,7 +172,7 @@ class LmrModel extends BaseModel {
             WHERE s.item_id = :item_id
               AND s.status = 'PASSED'
             GROUP BY s.lot_number, ua.allocated_qty
-            HAVING available_qty > 0
+            HAVING SUM(GREATEST(s.qty_on_hand - s.qty_blocked, 0)) > 0
             ORDER BY (MAX(r.received_date) IS NULL) ASC,
                      MAX(r.received_date) ASC,
                      MIN(r.expiry_date) ASC";
@@ -184,10 +188,36 @@ class LmrModel extends BaseModel {
                 'lot_number' => $row['lot_number'],
                 'available_qty' => round(floatval($row['available_qty']), 4),
                 'qty_on_hand' => round(floatval($row['raw_qty']), 4),
+                'reserved_qty' => round(floatval($row['reserved_qty']), 4),
                 'received_date' => $row['received_date'] ? date('Y-m-d', strtotime($row['received_date'])) : null,
                 'expiry_date' => $row['expiry_date'] ? date('Y-m-d', strtotime($row['expiry_date'])) : null,
             ];
         }, $stmt->fetchAll(\PDO::FETCH_ASSOC));
+    }
+
+    /**
+     * Item-level stock summary — same source as the MRP sheet
+     * ("Open Customer PO / Allocated"): view_inventory_status over
+     * inventory_balances, summed across all sites.
+     */
+    public function getItemStockSummary($itemId) {
+        $stmt = self::getConnection()->prepare("
+            SELECT COALESCE(v.total_soh, 0) AS soh,
+                   COALESCE(v.total_allocated, 0) AS allocated,
+                   COALESCE(v.available_stock, 0) AS available_stock
+            FROM view_inventory_status v
+            WHERE v.item_id = :item_id
+        ");
+        $stmt->execute(['item_id' => intval($itemId)]);
+        $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+        if (!$row) {
+            return ['soh' => 0.0, 'allocated' => 0.0, 'available_stock' => 0.0];
+        }
+        return [
+            'soh' => round(floatval($row['soh']), 4),
+            'allocated' => round(floatval($row['allocated']), 4),
+            'available_stock' => round(floatval($row['available_stock']), 4),
+        ];
     }
 
     /**
@@ -391,6 +421,13 @@ class LmrModel extends BaseModel {
                 $this->deallocateMaterials($lmrId);
             }
 
+            // Consumed materials are given back if the LMR leaves Released
+            // (edit reverts it to Planned, etc.). This must run before the
+            // item wipe — consumed allocation rows carry the lots to return.
+            if ($oldStatus === 'Released' && $newStatus !== 'Released' && $this->isMaterialsConsumed($lmrId)) {
+                $this->returnMaterials($lmrId);
+            }
+
             $stmt = $pdo->prepare("UPDATE lmr_orders SET
                 lmr_number = :lmr_number, lmr_type = :lmr_type, lmr_site = :lmr_site,
                 order_date = :order_date, due_date = :due_date, planned_start_date = :planned_start_date,
@@ -455,9 +492,9 @@ class LmrModel extends BaseModel {
                 }
             }
 
-            if ($hadActive && $newStatus === 'Released') {
-                $this->allocateMaterials($lmrId);
-            }
+            // Released LMRs no longer book a reservation on save — release now
+            // consumes stock directly (see LmrController::update, which calls
+            // consumeMaterials after the new lot allocations are saved).
 
             $pdo->commit();
             return $lmrId;
@@ -590,6 +627,372 @@ class LmrModel extends BaseModel {
             WHERE lmr_id = :lmr_id AND status = 'active'
         ");
         $cancelStmt->execute(['lmr_id' => $lmrId]);
+    }
+
+    /**
+     * Has this LMR's release already consumed (issued) inventory?
+     */
+    public function isMaterialsConsumed($lmrId) {
+        $stmt = self::getConnection()->prepare(
+            "SELECT materials_consumed_at FROM lmr_orders WHERE lmr_id = :lmr_id LIMIT 1"
+        );
+        $stmt->execute(['lmr_id' => intval($lmrId)]);
+        $at = $stmt->fetchColumn();
+        return $at !== false && $at !== null;
+    }
+
+    /**
+     * Fetched stock rows per lot for an item, FIFO oldest-received first.
+     * Shared by the consume (issue) plan builder.
+     */
+    private function getFifoLots($itemId) {
+        $stmt = self::getConnection()->prepare("
+            SELECT s.lot_number,
+                   SUM(GREATEST(s.qty_on_hand - s.qty_blocked, 0)) AS qty
+            FROM inventory_stock s
+            LEFT JOIN receiving_items r ON r.id = s.source_receiving_item_id
+            WHERE s.item_id = :item_id AND s.status = 'PASSED'
+            GROUP BY s.lot_number
+            HAVING qty > 0
+            ORDER BY (MAX(r.received_date) IS NULL) ASC,
+                     MAX(r.received_date) ASC,
+                     MIN(r.expiry_date) ASC
+        ");
+        $stmt->execute(['item_id' => intval($itemId)]);
+        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * One row of the release issue plan: take qty from an item's lot.
+     * The deduction is distributed across the physical inventory_stock rows
+     * of that lot (oldest first) because a lot may span several receiving
+     * rows — a blanket UPDATE would subtract from every row at once.
+     * Writes an OUT stock movement and adjusts the item-level
+     * inventory_balances row (SOH down, qty_allocated down by the consumed
+     * amount). lots with no lot number are issued but NOT recorded as an
+     * allocation row (they cannot be individually returned later).
+     */
+    private function issueFromLot($lmrId, $lmrNumber, $itemId, $itemCode, $lotNumber, $qty, $lriId, $createdBy) {
+        if ($qty <= 0) {
+            return;
+        }
+        $pdo = self::getConnection();
+        $hasLot = ($lotNumber !== null && trim((string) $lotNumber) !== '');
+        $requested = $qty;
+
+        // Distribute the deduction across the stock rows for this lot
+        $rowsStmt = $pdo->prepare("
+            SELECT stock_id, qty_on_hand
+            FROM inventory_stock
+            WHERE item_id = :item_id AND status = 'PASSED'
+              AND ((:raw_null IS NULL AND lot_number IS NULL) OR lot_number = :lot_match)
+            ORDER BY updated_at ASC, stock_id ASC
+        ");
+        $rowsStmt->execute([
+            'item_id' => intval($itemId),
+            'raw_null' => $hasLot ? 'LOT' : null,
+            'lot_match' => $hasLot ? $lotNumber : '',
+        ]);
+        foreach ($rowsStmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
+            if ($qty <= 1e-9) {
+                break;
+            }
+            $take = min($qty, floatval($row['qty_on_hand']));
+            if ($take <= 0) {
+                continue;
+            }
+            $updStmt = $pdo->prepare("
+                UPDATE inventory_stock
+                SET qty_on_hand = GREATEST(0, qty_on_hand - :qty), updated_at = NOW()
+                WHERE stock_id = :stock_id
+            ");
+            $updStmt->execute(['qty' => $take, 'stock_id' => intval($row['stock_id'])]);
+            $qty -= $take;
+        }
+
+        $mvStmt = $pdo->prepare("
+            INSERT INTO stock_movements (movement_type, item_id, site_code, qty, reference_type, reference_no, remarks, created_by, date_created)
+            VALUES ('OUT', :item_id, :site_code, :qty_mv, 'LMR_ISSUE', :ref_no, :remarks, :created_by, NOW())
+        ");
+        $mvStmt->execute([
+            'item_id' => intval($itemId),
+            'site_code' => self::DEFAULT_SITE_CODE,
+            'qty_mv' => $requested,
+            'ref_no' => $lmrNumber,
+            'remarks' => $hasLot ? ('LMR release issue — lot ' . $lotNumber) : 'LMR release issue — unnumbered lots',
+            'created_by' => $createdBy,
+        ]);
+
+        $invStmt = $pdo->prepare("
+            UPDATE inventory_balances
+            SET qty_on_hand = GREATEST(0, qty_on_hand - :qty_soh),
+                qty_allocated = GREATEST(0, qty_allocated - :qty_alloc),
+                updated_at = NOW()
+            WHERE item_id = :item_id AND site_code = :site_code
+        ");
+        $invStmt->execute([
+            'qty_soh' => $requested,
+            'qty_alloc' => $requested,
+            'item_id' => intval($itemId),
+            'site_code' => self::DEFAULT_SITE_CODE,
+        ]);
+
+        // Record the consumed row so a cancel after release can give the
+        // stock back. Unnumbered lots are recorded with an empty lot number.
+        $lotKey = $hasLot ? trim((string) $lotNumber) : '';
+        $hasRow = $pdo->prepare("
+            SELECT COUNT(*) FROM lmr_lot_allocations
+            WHERE lmr_id = :lmr_id AND item_id = :item_id AND lot_number = :lot_number
+              AND status IN ('active', 'consumed')
+        ");
+        $hasRow->execute([
+            'lmr_id' => intval($lmrId),
+            'item_id' => intval($itemId),
+            'lot_number' => $lotKey,
+        ]);
+        if ((int) $hasRow->fetchColumn() === 0) {
+            $insStmt = $pdo->prepare("
+                INSERT INTO lmr_lot_allocations
+                    (lmr_id, lri_id, item_id, item_code, lot_number, allocated_qty, status, created_by)
+                VALUES (:lmr_id, :lri_id, :item_id, :item_code, :lot_number, :qty_alloc, 'consumed', :created_by)
+            ");
+            $insStmt->execute([
+                'lmr_id' => intval($lmrId),
+                'lri_id' => $lriId,
+                'item_id' => intval($itemId),
+                'item_code' => $itemCode,
+                'lot_number' => $lotKey,
+                'qty_alloc' => round($requested, 4),
+                'created_by' => $createdBy,
+            ]);
+        }
+    }
+
+    /**
+     * Release = materials are used in production.
+     * Consumes this LMR's stock: operator lot allocations are issued from
+     * their exact lots; any component without allocations is issued FIFO
+     * (oldest received first) by the BOM-computed requirement. Every issued
+     * lot is recorded as a 'consumed' lmr_lot_allocations row and an OUT
+     * stock movement, inventory_stock + inventory_balances are deducted and
+     * the item-level qty_allocated booking is reduced by the same amount.
+     * Idempotent: no-op if the LMR was already marked consumed.
+     */
+    public function consumeMaterials($lmrId) {
+        $lmrId = intval($lmrId);
+        if ($lmrId <= 0 || $this->isMaterialsConsumed($lmrId)) {
+            return;
+        }
+        $pdo = self::getConnection();
+
+        $order = $this->findById($lmrId);
+        if (!$order) {
+            return;
+        }
+        $lmrNumber = $order['lmr_number'] ?? ('LMR-' . $lmrId);
+        $createdBy = $_SESSION['user_id'] ?? null;
+
+        // Issue plan from saved operator allocations
+        $allocRows = $pdo->prepare("
+            SELECT id, lri_id, item_id, item_code, lot_number, allocated_qty
+            FROM lmr_lot_allocations
+            WHERE lmr_id = :lmr_id AND status = 'active' AND allocated_qty > 0
+        ");
+        $allocRows->execute(['lmr_id' => $lmrId]);
+        $activeAllocs = $allocRows->fetchAll(\PDO::FETCH_ASSOC);
+
+        $plan = []; // item_id => ['allocated_total' => f, 'lots' => [lot => qty], 'item_code' => ..]
+        foreach ($activeAllocs as $a) {
+            $iid = intval($a['item_id']);
+            if (!isset($plan[$iid])) {
+                $plan[$iid] = ['allocated_total' => 0.0, 'lots' => [], 'item_code' => $a['item_code']];
+            }
+            $plan[$iid]['lots'][$a['lot_number']] = ($plan[$iid]['lots'][$a['lot_number']] ?? 0) + floatval($a['allocated_qty']);
+            $plan[$iid]['allocated_total'] += floatval($a['allocated_qty']);
+        }
+
+        // Found lots get issued first; the LMR's own forced FIFO (or partial)
+        // remainder comes from the BOM-computed requirement. Header-only LMRs
+        // (no lmr_order_items rows) resolve their BOM from the header so a
+        // legacy backfill still sweeps every component. Already-consumed
+        // records from a prior partial run count toward the target.
+        $consumedRows = $pdo->prepare("
+            SELECT item_id, SUM(allocated_qty) AS issued
+            FROM lmr_lot_allocations
+            WHERE lmr_id = :lmr_id AND status = 'consumed'
+            GROUP BY item_id
+        ");
+        $consumedRows->execute(['lmr_id' => $lmrId]);
+        $alreadyIssued = [];
+        foreach ($consumedRows->fetchAll(\PDO::FETCH_ASSOC) as $c) {
+            $alreadyIssued[intval($c['item_id'])] = floatval($c['issued']);
+        }
+
+        $requiredByItem = [];
+        $items = $this->getItemsForDisplay($lmrId);
+        $warehouseModel = new \App\Models\WarehouseModel();
+        foreach ($items as $item) {
+            $bomCode = $item['bom_code'] ?? null;
+            $qtyOrdered = floatval($item['qty_ordered'] ?? 0);
+            if (empty($bomCode) || $qtyOrdered <= 0) {
+                continue;
+            }
+            $bom = $warehouseModel->getBomByCode($bomCode);
+            if (!$bom) {
+                continue;
+            }
+            foreach ($warehouseModel->getBOMComponentsWithStock([$bom['id']]) as $comp) {
+                $requiredQty = round($this->computeRequiredQty($qtyOrdered, $bom, $comp), 4);
+                if ($requiredQty <= 0) {
+                    continue;
+                }
+                $iid = intval($comp['component_item_id']);
+                $requiredByItem[$iid] = ($requiredByItem[$iid] ?? 0) + $requiredQty;
+            }
+        }
+
+        // Items with allocations but no computed requirement still issue
+        // (whatever the operator allocated); items without allocations fall
+        // back to FIFO of the unmet required amount.
+        $issueTargets = [];
+        foreach ($plan as $iid => $p) {
+            $issueTargets[$iid] = max($p['allocated_total'], max(0.0, floatval($requiredByItem[$iid] ?? 0) - ($alreadyIssued[$iid] ?? 0)));
+        }
+        foreach ($requiredByItem as $iid => $req) {
+            if (!isset($issueTargets[$iid])) {
+                $issueTargets[$iid] = max(0.0, $req - ($alreadyIssued[$iid] ?? 0));
+            }
+        }
+
+        foreach ($issueTargets as $iid => $totalToIssue) {
+            if ($totalToIssue <= 0) {
+                continue;
+            }
+            $remaining = $totalToIssue;
+            $itemCode = $plan[$iid]['item_code'] ?? null;
+
+            if (isset($plan[$iid])) {
+                foreach ($plan[$iid]['lots'] as $lot => $qty) {
+                    if ($remaining <= 1e-9) break;
+                    $take = min($remaining, $qty);
+                    $this->issueFromLot($lmrId, $lmrNumber, $iid, $itemCode, $lot, $take, null, $createdBy);
+                    $remaining -= $take;
+                }
+            }
+
+            if ($remaining > 1e-9) {
+                foreach ($this->getFifoLots($iid) as $lotRow) {
+                    if ($remaining <= 1e-9) break;
+                    $take = min($remaining, floatval($lotRow['qty']));
+                    if ($take <= 0) continue;
+                    $this->issueFromLot($lmrId, $lmrNumber, $iid, $itemCode, $lotRow['lot_number'], $take, null, $createdBy);
+                    $remaining -= $take;
+                }
+            }
+        }
+
+        // Flip the operator's active allocations to consumed (keeps history).
+        $pdo->prepare("
+            UPDATE lmr_lot_allocations
+            SET status = 'consumed', updated_at = NOW()
+            WHERE lmr_id = :lmr_id AND status = 'active'
+        ")->execute(['lmr_id' => $lmrId]);
+
+        $pdo->prepare("
+            UPDATE lmr_orders SET materials_consumed_at = NOW(), updated_at = NOW()
+            WHERE lmr_id = :lmr_id
+        ")->execute(['lmr_id' => $lmrId]);
+    }
+
+    /**
+     * Give back the materials a released LMR consumed (cancel after release,
+     * or release edit reverting to Planned). Returns the exact lots recorded
+     * by consumeMaterials, writes IN movements and restores the item-level
+     * balance. Idempotent: no-op if nothing was consumed.
+     */
+    public function returnMaterials($lmrId) {
+        $lmrId = intval($lmrId);
+        if ($lmrId <= 0 || !$this->isMaterialsConsumed($lmrId)) {
+            return;
+        }
+        $pdo = self::getConnection();
+
+        $order = $this->findById($lmrId);
+        $lmrNumber = $order['lmr_number'] ?? ('LMR-' . $lmrId);
+        $createdBy = $_SESSION['user_id'] ?? null;
+
+        $stmt = $pdo->prepare("
+            SELECT item_id, item_code, lot_number, allocated_qty
+            FROM lmr_lot_allocations
+            WHERE lmr_id = :lmr_id AND status = 'consumed' AND allocated_qty > 0
+        ");
+        $stmt->execute(['lmr_id' => $lmrId]);
+        $consumed = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+        foreach ($consumed as $c) {
+            $qty = floatval($c['allocated_qty']);
+            $iid = intval($c['item_id']);
+            $lot = $c['lot_number'];
+
+            $stockStmt = $pdo->prepare("
+                UPDATE inventory_stock
+                SET qty_on_hand = qty_on_hand + :qty, updated_at = NOW()
+                WHERE item_id = :item_id AND lot_number = :lot_number AND status = 'PASSED'
+            ");
+            $stockStmt->execute(['qty' => $qty, 'item_id' => $iid, 'lot_number' => $lot]);
+            if ($stockStmt->rowCount() === 0) {
+                // Lot row was fully deleted meanwhile — recreate it.
+                $insStmt = $pdo->prepare("
+                    INSERT INTO inventory_stock
+                        (item_id, site_code, lot_number, qty_on_hand, qty_blocked, qty_rejected, status, reference_type)
+                    VALUES (:item_id, :site_code, :lot_number, :qty, 0, 0, 'PASSED', 'lmr_return')
+                ");
+                $insStmt->execute([
+                    'item_id' => $iid,
+                    'site_code' => self::DEFAULT_SITE_CODE,
+                    'lot_number' => $lot,
+                    'qty' => $qty,
+                ]);
+            }
+
+            $mvStmt = $pdo->prepare("
+                INSERT INTO stock_movements (movement_type, item_id, site_code, qty, reference_type, reference_no, remarks, created_by, date_created)
+                VALUES ('IN', :item_id, :site_code, :qty, 'LMR_RETURN', :ref_no, :remarks, :created_by, NOW())
+            ");
+            $mvStmt->execute([
+                'item_id' => $iid,
+                'site_code' => self::DEFAULT_SITE_CODE,
+                'qty' => $qty,
+                'ref_no' => $lmrNumber,
+                'remarks' => 'LMR cancel/restore — lot ' . $lot,
+                'created_by' => $createdBy,
+            ]);
+
+            $invStmt = $pdo->prepare("
+                UPDATE inventory_balances
+                SET qty_on_hand = qty_on_hand + :qty_soh,
+                    qty_allocated = qty_allocated + :qty_alloc,
+                    updated_at = NOW()
+                WHERE item_id = :item_id AND site_code = :site_code
+            ");
+            $invStmt->execute([
+                'qty_soh' => $qty,
+                'qty_alloc' => $qty,
+                'item_id' => $iid,
+                'site_code' => self::DEFAULT_SITE_CODE,
+            ]);
+        }
+
+        $pdo->prepare("
+            UPDATE lmr_lot_allocations
+            SET status = 'returned', updated_at = NOW()
+            WHERE lmr_id = :lmr_id AND status = 'consumed'
+        ")->execute(['lmr_id' => $lmrId]);
+
+        $pdo->prepare("
+            UPDATE lmr_orders SET materials_consumed_at = NULL, updated_at = NOW()
+            WHERE lmr_id = :lmr_id
+        ")->execute(['lmr_id' => $lmrId]);
     }
 
     public function getLmrBomBreakdown($lmrId) {

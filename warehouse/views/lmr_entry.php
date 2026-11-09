@@ -122,15 +122,9 @@
                     <?php endforeach; ?>
                 </select>
             </div>
-            <div class="col-md-6">
+            <div class="col-md-4">
                 <label class="form-label fw-semibold">Customer Name</label>
                 <input type="text" id="customerName" class="form-control" readonly placeholder="Auto-fills after selecting customer" value="<?= htmlspecialchars($lmr['customer_name'] ?? '') ?>">
-            </div>
-            <div class="col-md-6">
-                <label class="form-label fw-semibold">PO Number <span class="text-danger">*</span></label>
-                <select name="po_number" id="poNumber" class="form-select filter-select" data-selected-po="<?= htmlspecialchars($lmr['po_number'] ?? '') ?>">
-                    <option value="">Select open PO</option>
-                </select>
             </div>
             <div class="col-md-4">
                 <label class="form-label fw-semibold">Formulation (BOM Code) <span class="text-danger">*</span></label>
@@ -191,6 +185,8 @@
                             <th>UOM</th>
                             <th class="text-end">Req. Qty</th>
                             <th class="text-end">SOH</th>
+                            <th class="text-end">Allocated</th>
+                            <th class="text-end">Available</th>
                             <th>Status</th>
                             <th>Lots</th>
                         </tr>
@@ -214,7 +210,12 @@
             <div class="modal-body">
                 <div id="lotAllocModalError" class="alert alert-danger py-2" style="display:none;"></div>
                 <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
-                    <div><strong>Required:</strong> <span id="lotAllocRequired">0</span></div>
+                    <div>
+                        <strong>Required:</strong> <span id="lotAllocRequired">0</span>
+                        &nbsp;|&nbsp; <strong>SOH:</strong> <span id="lotAllocSoh">—</span>
+                        &nbsp;|&nbsp; <strong>Allocated (MRP):</strong> <span id="lotAllocMrpAllocated" class="text-warning fw-bold">—</span>
+                        &nbsp;|&nbsp; <strong>Available (SOH − Allocated):</strong> <span id="lotAllocMrpAvailable">—</span>
+                    </div>
                     <div><strong>Allocated:</strong> <span id="lotAllocTotal">0</span> &nbsp;|&nbsp; <strong>Remaining:</strong> <span id="lotAllocRemaining">0</span></div>
                 </div>
                 <table class="table table-sm align-middle">
@@ -223,13 +224,15 @@
                             <th>Lot No.</th>
                             <th>Received</th>
                             <th>Expiry</th>
+                            <th class="text-end">SOH</th>
+                            <th class="text-end">Reserved (LMR)</th>
                             <th class="text-end">Available Qty</th>
                             <th style="width:150px;">Allocate Qty</th>
                         </tr>
                     </thead>
                     <tbody id="lotAllocBody"></tbody>
                 </table>
-                <small class="text-muted d-block">Lots are sorted FIFO — oldest received stock first.</small>
+                <small class="text-muted d-block">Lots are sorted FIFO — oldest received stock first. <span class="text-warning fw-semibold">Reserved (LMR)</span> = qty allocated by other active LMR lot allocations (MRP books its reservation at item level — see Allocated (MRP) in the header); fully-reserved lots are locked.</small>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-secondary me-auto" id="lotAllocFifo"><i class="bi bi-arrow-down-up me-1"></i>Auto FIFO</button>
@@ -248,7 +251,6 @@ document.addEventListener('DOMContentLoaded', function () {
     const customerIdHidden = document.getElementById('customerIdHidden');
     const customerNameHidden = document.getElementById('customerNameHidden');
     const customerCodeHidden = document.getElementById('customerCodeHidden');
-    const poSelect = document.getElementById('poNumber');
     const bomCodeSelect = document.getElementById('bomCode');
     const headerItemCode = document.getElementById('headerItemCode');
     const headerItemDescription = document.getElementById('headerItemDescription');
@@ -344,37 +346,11 @@ document.addEventListener('DOMContentLoaded', function () {
         customerCodeHidden.value = code;
 
         const customerId = selectedOption ? selectedOption.value : '';
-        poSelect.innerHTML = '<option value="">Select open PO</option>';
         filterBomOptionsByCustomer(customerId, code);
 
         if (!customerId) {
             return;
         }
-
-        fetch('?controller=warehouse&action=getCustomerPOs&customer_id=' + encodeURIComponent(customerId))
-            .then(function (r) { return r.json(); })
-            .then(function (data) {
-                if (!data || data.length === 0) {
-                    poSelect.innerHTML = '<option value="">No open PO for this customer</option>';
-                    delete poSelect.dataset.selectedPo;
-                    showFormValidation('No open purchase orders found for <strong>' + escapeHtml(name || code || 'this customer') + '</strong>. Create a Customer PO first.');
-                    return;
-                }
-                var selectedPo = poSelect.dataset.selectedPo || '';
-                data.forEach(function (po) {
-                    const option = document.createElement('option');
-                    option.value = po.po_number || '';
-                    option.textContent = po.label || po.po_number || 'PO';
-                    if (selectedPo && option.value === selectedPo) {
-                        option.selected = true;
-                    }
-                    poSelect.appendChild(option);
-                });
-                delete poSelect.dataset.selectedPo;
-            })
-            .catch(function () {
-                poSelect.innerHTML = '<option value="">No open PO found</option>';
-            });
     }
 
     function resetBomPreview() {
@@ -468,6 +444,8 @@ document.addEventListener('DOMContentLoaded', function () {
             html += '<td>' + (c.item_uom || '') + '</td>';
             html += '<td class="text-end">' + c.required_qty.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4}) + '</td>';
             html += '<td class="text-end">' + c.soh.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4}) + '</td>';
+            html += '<td class="text-end">' + (c.allocated != null ? c.allocated : 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4}) + '</td>';
+            html += '<td class="text-end">' + Math.max(0, c.soh - (c.allocated || 0)).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4}) + '</td>';
             html += '<td>' + statusBadge + '</td>';
             html += '<td class="lot-alloc-cell">' + (allocCell || '<span class="text-muted">—</span>') + '</td>';
             html += '</tr>';
@@ -578,7 +556,10 @@ document.addEventListener('DOMContentLoaded', function () {
             'Allocate Lots — ' + (itemCode || '') + (description ? ' (' + description + ')' : '');
         document.getElementById('lotAllocRequired').textContent = fmtQty(required);
         hideLotAllocError();
-        lotAllocBody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-3"><span class="spinner-border spinner-border-sm me-1"></span>Loading lots...</td></tr>';
+        document.getElementById('lotAllocSoh').textContent = '—';
+        document.getElementById('lotAllocMrpAllocated').textContent = '—';
+        document.getElementById('lotAllocMrpAvailable').textContent = '—';
+        lotAllocBody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-3"><span class="spinner-border spinner-border-sm me-1"></span>Loading lots...</td></tr>';
 
         var lmrId = getLmrIdValue();
         if (lotAllocBs) lotAllocBs.show();
@@ -589,12 +570,15 @@ document.addEventListener('DOMContentLoaded', function () {
             .then(function (r) { return r.json(); })
             .then(function (data) {
                 if (data.error) {
-                    lotAllocBody.innerHTML = '<tr><td colspan="5" class="text-center text-danger py-3">' + escapeHtml(data.error) + '</td></tr>';
+                    lotAllocBody.innerHTML = '<tr><td colspan="7" class="text-center text-danger py-3">' + escapeHtml(data.error) + '</td></tr>';
                     return;
                 }
+                document.getElementById('lotAllocSoh').textContent = fmtQty(data.soh);
+                document.getElementById('lotAllocMrpAllocated').textContent = fmtQty(data.allocated);
+                document.getElementById('lotAllocMrpAvailable').textContent = fmtQty(data.available_stock);
                 currentLotList = data.lots || [];
                 if (!currentLotList.length) {
-                    lotAllocBody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-3">No inventory lots on hand for this item.</td></tr>';
+                    lotAllocBody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-3">No inventory lots on hand for this item.</td></tr>';
                     refreshAllocSummary();
                     return;
                 }
@@ -606,25 +590,35 @@ document.addEventListener('DOMContentLoaded', function () {
                 Object.keys(existingByLot).forEach(function (lot) {
                     var found = currentLotList.some(function (l) { return l.lot_number === lot; });
                     if (!found) {
-                        currentLotList.push({ lot_number: lot, available_qty: existingByLot[lot], qty_on_hand: existingByLot[lot], received_date: null, expiry_date: null });
+                        currentLotList.push({ lot_number: lot, available_qty: existingByLot[lot], qty_on_hand: existingByLot[lot], reserved_qty: 0, received_date: null, expiry_date: null });
                     }
                 });
                 var rows = currentLotList.map(function (l) {
                     var allocQty = existingByLot[l.lot_number] || 0;
-                    return '<tr>' +
-                        '<td><strong>' + escapeHtml(l.lot_number) + '</strong></td>' +
+                    var fullyReserved = parseFloat(l.available_qty) <= 1e-9 && allocQty <= 0;
+                    var rowClass = fullyReserved ? ' class="table-light text-muted"' : '';
+                    var input;
+                    if (fullyReserved) {
+                        input = '<input type="number" class="form-control form-control-sm text-end" value="0" disabled title="Fully reserved by other active LMR(s)">';
+                    } else {
+                        input = '<input type="number" class="form-control form-control-sm text-end" min="0" step="0.0001" ' +
+                            'data-lot-number="' + escapeHtml(l.lot_number) + '" data-available="' + l.available_qty + '" value="' + allocQty + '">';
+                    }
+                    return '<tr' + rowClass + '>' +
+                        '<td><strong>' + escapeHtml(l.lot_number) + '</strong>' + (fullyReserved ? ' <i class="bi bi-lock-fill small text-secondary" title="Fully reserved by other active LMR allocation(s)"></i>' : '') + '</td>' +
                         '<td>' + (l.received_date || '—') + '</td>' +
                         '<td>' + (l.expiry_date || '—') + '</td>' +
+                        '<td class="text-end">' + fmtQty(l.qty_on_hand) + '</td>' +
+                        '<td class="text-end">' + (parseFloat(l.reserved_qty) > 0 ? '<span class="text-warning fw-semibold">' + fmtQty(l.reserved_qty) + '</span>' : fmtQty(0)) + '</td>' +
                         '<td class="text-end">' + fmtQty(l.available_qty) + '</td>' +
-                        '<td><input type="number" class="form-control form-control-sm text-end" min="0" step="0.0001" ' +
-                        'data-lot-number="' + escapeHtml(l.lot_number) + '" data-available="' + l.available_qty + '" value="' + allocQty + '"></td>' +
+                        '<td>' + input + '</td>' +
                         '</tr>';
                 }).join('');
                 lotAllocBody.innerHTML = rows;
                 refreshAllocSummary();
             })
             .catch(function () {
-                lotAllocBody.innerHTML = '<tr><td colspan="5" class="text-center text-danger py-3">Failed to load lots.</td></tr>';
+                lotAllocBody.innerHTML = '<tr><td colspan="7" class="text-center text-danger py-3">Failed to load lots.</td></tr>';
             });
     }
 
@@ -800,13 +794,6 @@ document.addEventListener('DOMContentLoaded', function () {
                 errors.push('Please select a Customer Code.');
                 customerSelectEl.classList.add('is-invalid');
                 if (!firstInvalid) firstInvalid = customerSelectEl;
-            }
-
-            var poSelectEl = document.getElementById('poNumber');
-            if (!poSelectEl.value) {
-                errors.push('PO Number is required for LMR printing linkage.');
-                poSelectEl.classList.add('is-invalid');
-                if (!firstInvalid) firstInvalid = poSelectEl;
             }
 
             var qtyOrderedEl = document.getElementById('headerQtyOrdered');

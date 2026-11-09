@@ -887,4 +887,31 @@ $record19->execute(['release-qc-gated-runs-v1']);
 
 // ─── End Phase 19 ───────────────────────────────────────────────────────
 
+echo "\n--- Phase 20: LMR release consumes materials ---\n";
+
+addColumn($pdo, 'lmr_orders', 'materials_consumed_at', 'DATETIME NULL', 'updated_at');
+
+$statusType = $pdo->query("SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lmr_lot_allocations' AND COLUMN_NAME = 'status'")->fetchColumn();
+if (is_string($statusType) && strpos($statusType, "'consumed'") === false) {
+    $pdo->exec("ALTER TABLE lmr_lot_allocations MODIFY COLUMN status ENUM('active','cancelled','consumed','returned') NOT NULL DEFAULT 'active'");
+    echo "Updated: lmr_lot_allocations.status enum (consumed, returned)\n";
+}
+
+$pendingConsumed = (int) $pdo->query(
+    "SELECT COUNT(*) FROM lmr_orders WHERE lmr_status = 'Released' AND materials_consumed_at IS NULL"
+)->fetchColumn();
+if ($pendingConsumed > 0) {
+    echo "Backfilling {$pendingConsumed} legacy released LMR(s) whose materials were never consumed...\n";
+    require __DIR__ . '/backfill_lmr_consumed.php';
+} else {
+    echo "No legacy released LMRs awaiting consumption - skipped\n";
+}
+
+$record20 = $pdo->prepare('INSERT INTO schema_migrations (migration_key) VALUES (?)
+    ON DUPLICATE KEY UPDATE applied_at = CURRENT_TIMESTAMP');
+$record20->execute(['lmr-release-consumes-materials-v1']);
+
+// ─── End Phase 20 ───────────────────────────────────────────────────────
+
 echo "\nSchema deployment complete.\n";

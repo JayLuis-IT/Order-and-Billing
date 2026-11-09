@@ -141,29 +141,6 @@ class LmrController {
             exit;
         }
 
-        if (empty($header['po_number'])) {
-            if ($isAjax) {
-                header('Content-Type: application/json');
-                echo json_encode(['success' => false, 'error' => 'PO Number is required for LMR printing.']);
-                exit;
-            }
-            $_SESSION['error'] = 'PO Number is required for LMR printing.';
-            header('Location: ?controller=lmr&action=create');
-            exit;
-        }
-
-        if ($header['customer_id'] && !$this->lmrModel->poBelongsToCustomer($header['po_number'], $header['customer_id'])) {
-            $poError = 'Selected PO does not belong to the selected customer.';
-            if ($isAjax) {
-                header('Content-Type: application/json');
-                echo json_encode(['success' => false, 'error' => $poError]);
-                exit;
-            }
-            $_SESSION['error'] = $poError;
-            header('Location: ?controller=lmr&action=create');
-            exit;
-        }
-
         $bomError = $this->validateHeaderBom($header);
         if ($bomError !== null) {
             if ($isAjax) {
@@ -318,29 +295,6 @@ class LmrController {
             exit;
         }
 
-        if (empty($header['po_number'])) {
-            if ($isAjax) {
-                header('Content-Type: application/json');
-                echo json_encode(['success' => false, 'error' => 'PO Number is required for LMR printing.']);
-                exit;
-            }
-            $_SESSION['error'] = 'PO Number is required for LMR printing.';
-            header('Location: ?controller=lmr&action=edit&id=' . $lmrId);
-            exit;
-        }
-
-        if ($header['customer_id'] && !$this->lmrModel->poBelongsToCustomer($header['po_number'], $header['customer_id'])) {
-            $poError = 'Selected PO does not belong to the selected customer.';
-            if ($isAjax) {
-                header('Content-Type: application/json');
-                echo json_encode(['success' => false, 'error' => $poError]);
-                exit;
-            }
-            $_SESSION['error'] = $poError;
-            header('Location: ?controller=lmr&action=edit&id=' . $lmrId);
-            exit;
-        }
-
         $bomError = $this->validateHeaderBom($header);
         if ($bomError !== null) {
             if ($isAjax) {
@@ -356,7 +310,7 @@ class LmrController {
         $allocs = $this->parseLotAllocations();
         if (!empty($allocs)) {
             $fgItemId = intval($this->lmrModel->getItemIdByBomCode($header['bom_code'] ?? ''));
-            $allocError = $this->validateLotAllocations($allocs, $header, $fgItemId);
+            $allocError = $this->validateLotAllocations($allocs, $header, $fgItemId, $lmrId);
             if ($allocError !== null) {
                 if ($isAjax) {
                     header('Content-Type: application/json');
@@ -376,6 +330,11 @@ class LmrController {
             } else {
                 // Cleared / no lots selected on save → drop previous selections
                 $this->lmrModel->saveLotAllocations($lmrId, []);
+            }
+            // If this edit set the LMR to Released, consume the materials now
+            // that the fresh lot allocations are saved (release button does the same).
+            if (($header['lmr_status'] ?? '') === 'Released' && !$this->lmrModel->isMaterialsConsumed($lmrId)) {
+                $this->lmrModel->consumeMaterials($lmrId);
             }
             if ($isAjax) {
                 header('Content-Type: application/json');
@@ -500,7 +459,7 @@ class LmrController {
             \App\Core\BaseModel::beginTransaction();
 
             $this->lmrModel->updateStatus($id, 'Released');
-            $this->lmrModel->allocateMaterials($id);
+            $this->lmrModel->consumeMaterials($id);
 
             \App\Core\BaseModel::commit();
         } catch (\Exception $e) {
@@ -519,7 +478,7 @@ class LmrController {
             );
         }
 
-        $_SESSION['success'] = 'LMR ' . htmlspecialchars($order['lmr_number']) . ' released successfully. Material allocations updated.';
+        $_SESSION['success'] = 'LMR ' . htmlspecialchars($order['lmr_number']) . ' released successfully. Materials issued to production from inventory.';
         header('Location: ?controller=lmr&action=index');
         exit;
     }
@@ -551,7 +510,11 @@ class LmrController {
         try {
             \App\Core\BaseModel::beginTransaction();
 
-            $this->lmrModel->deallocateMaterials($id);
+            if ($this->lmrModel->isMaterialsConsumed($id)) {
+                $this->lmrModel->returnMaterials($id);
+            } else {
+                $this->lmrModel->deallocateMaterials($id);
+            }
             $this->lmrModel->updateStatus($id, 'Cancelled');
 
             \App\Core\BaseModel::commit();
@@ -696,6 +659,7 @@ class LmrController {
         }
         try {
             $lots = $this->lmrModel->getAvailableLotsForItem($itemId, $lmrId);
+            $stockSummary = $this->lmrModel->getItemStockSummary($itemId);
             $existing = [];
             if ($lmrId > 0) {
                 foreach ($this->lmrModel->getLotAllocations($lmrId) as $a) {
@@ -709,6 +673,9 @@ class LmrController {
             }
             echo json_encode([
                 'item_id' => $itemId,
+                'soh' => $stockSummary['soh'],
+                'allocated' => $stockSummary['allocated'],
+                'available_stock' => $stockSummary['available_stock'],
                 'lots' => $lots,
                 'existing' => $existing,
             ]);
@@ -725,7 +692,7 @@ class LmrController {
      * of the header formulation. Returns an error string or null.
      * Empty / no allocations → allocation is optional and passes.
      */
-    private function validateLotAllocations(array $allocs, array $header, int $fgItemId) {
+    private function validateLotAllocations(array $allocs, array $header, int $fgItemId, int $excludeLmrId = 0) {
         $qty = (float) ($header['qty_ordered'] ?? 0);
         if ($qty <= 0 || $fgItemId <= 0) {
             return 'Qty Ordered / formulation is required before allocating lots.';
@@ -769,7 +736,7 @@ class LmrController {
                 return 'Allocated quantity (' . $allocated . ') does not match the required quantity (' . $requiredMap[$itemId] . ').';
             }
             // Ensure the lots still exist / have enough balance
-            $lots = $this->lmrModel->getAvailableLotsForItem($itemId);
+            $lots = $this->lmrModel->getAvailableLotsForItem($itemId, $excludeLmrId ?: null);
             $availMap = [];
             foreach ($lots as $l) {
                 $availMap[$l['lot_number']] = floatval($l['available_qty']);
