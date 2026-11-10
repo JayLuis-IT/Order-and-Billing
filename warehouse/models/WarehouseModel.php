@@ -3500,9 +3500,11 @@ class WarehouseModel extends BaseModel {
 
     public function getLotsByItemForInventory($item_id) {
         $conn = self::getConnection();
+        $iid = intval($item_id);
 
         $sql = "SELECT pl.lot_id, pl.lot_number, pl.pcs_per_case, pl.quantity_produced,
                        pl.lot_date, pl.created_by, pl.item_id,
+                       pl.lot_closed_manual,
                        u.full_name as created_by_name
                 FROM production_lots pl
                 LEFT JOIN users u ON pl.created_by = u.user_id
@@ -3522,19 +3524,268 @@ class WarehouseModel extends BaseModel {
             $allBackloaded[intval($bl['lot_id'])] = intval($bl['total_backloaded']);
         }
 
+        // LMR lot targets: lot = Released LMR header lot number for this item;
+        // target = line-item qty when line items exist, else header qty.
+        $targetStmt = $conn->prepare("
+            SELECT l.lot_number, MAX(COALESCE(li.total_qty, l.qty_ordered)) AS target_qty
+            FROM lmr_orders l
+            JOIN items ih ON ih.item_id = :iid1 AND ih.item_code = l.item_code AND ih.`remove` = 0
+            LEFT JOIN (
+                SELECT lmr_id, SUM(qty_ordered) AS total_qty
+                FROM lmr_order_items WHERE item_id = :iid2 GROUP BY lmr_id
+            ) li ON li.lmr_id = l.lmr_id
+            WHERE l.lmr_status = 'Released' AND TRIM(COALESCE(l.lot_number, '')) <> ''
+              AND (li.lmr_id IS NOT NULL OR EXISTS (SELECT 1 FROM lmr_order_items lx WHERE lx.lmr_id = l.lmr_id LIMIT 1) = 0)
+            GROUP BY l.lot_number
+        ");
+        $targetStmt->execute(['iid1' => $iid, 'iid2' => $iid]);
+
+        $producedStmt = $conn->prepare("
+            SELECT lot_number, SUM(added_quantity) AS produced
+            FROM production_history WHERE item_id = :iid3 AND is_removed = 0
+            GROUP BY lot_number
+        ");
+        $producedStmt->execute(['iid3' => $iid]);
+
+        $targets = [];
+        while ($tr = $targetStmt->fetch(\PDO::FETCH_ASSOC)) {
+            $targets[$tr['lot_number']] = [
+                'target_qty' => floatval($tr['target_qty']),
+                'produced' => 0.0,
+            ];
+        }
+        while ($pr = $producedStmt->fetch(\PDO::FETCH_ASSOC)) {
+            if (isset($targets[$pr['lot_number']])) {
+                $targets[$pr['lot_number']]['produced'] = floatval($pr['produced']);
+            }
+        }
+
         foreach ($lots as &$lot) {
             $lid = intval($lot['lot_id']);
             $delivered = $allDelivered[$lid] ?? 0;
             $backloaded = $allBackloaded[$lid] ?? 0;
             $lot['quantity_delivered'] = $delivered;
             $lot['available_balance'] = max(0, intval($lot['quantity_produced']) - $delivered + $backloaded);
+
+            $raw = isset($lot['lot_closed_manual']) ? $lot['lot_closed_manual'] : null;
+            $manual = ($raw === null || $raw === '')
+                ? null
+                : (intval($raw) === 1 ? 1 : 0);
+            $lot['manual_closed'] = $manual; // null = auto, 1 = manually closed, 0 = manually open
+
+            $lmrInfo = $targets[$lot['lot_number']] ?? null;
+            $autoClosed = false;
+            if ($lmrInfo !== null && $lmrInfo['target_qty'] > 0 && $lmrInfo['produced'] >= $lmrInfo['target_qty']) {
+                $autoClosed = true;
+            }
+            $lot['lmr_target_qty'] = $lmrInfo !== null ? $lmrInfo['target_qty'] : null;
+            $lot['lmr_produced_qty'] = $lmrInfo !== null ? $lmrInfo['produced'] : null;
+            $lot['lot_closed'] = $manual !== null ? ($manual === 1) : $autoClosed;
         }
         unset($lot);
 
         return $lots;
     }
 
-public function searchItems($query) {
+    /**
+     * Manually close / reopen every production_lots row of one item+lot group
+     * (tri-state override: 1 = manually closed, 0 = manually re-opened,
+     * NULL = automatic). Returns whether a row was changed. For LMR lots
+     * with no production rows yet, a zero-quantity stub group is created
+     * so the switch can keep its state.
+     */
+    public function setLotClosedManual($itemId, $lotNumber, $closed) {
+        $stmt = self::getConnection()->prepare("
+            UPDATE production_lots
+            SET lot_closed_manual = :flag, last_update = NOW()
+            WHERE item_id = :item_id AND lot_number = :lot_number AND is_removed = 0
+        ");
+        $stmt->execute([
+            'flag' => $closed ? 1 : 0,
+            'item_id' => intval($itemId),
+            'lot_number' => (string) $lotNumber,
+        ]);
+        if ($stmt->rowCount() > 0) {
+            return true;
+        }
+
+        $cnt = self::getConnection()->prepare("
+            SELECT COUNT(*) FROM production_lots
+            WHERE item_id = :item_id AND lot_number = :lot_number
+        ");
+        $cnt->execute(['item_id' => intval($itemId), 'lot_number' => (string) $lotNumber]);
+        if ((int) $cnt->fetchColumn() > 0) {
+            return false;
+        }
+
+        $ins = self::getConnection()->prepare("
+            INSERT INTO production_lots (item_id, lot_number, quantity_produced, pcs_per_case, lot_date, created_by)
+            VALUES (:item_id, :lot_number, 0, NULL, CURDATE(), :created_by)
+        ");
+        $ins->execute([
+            'item_id' => intval($itemId),
+            'lot_number' => (string) $lotNumber,
+            'created_by' => $_SESSION['user_id'] ?? null,
+        ]);
+
+        $stmt->execute([
+            'flag' => $closed ? 1 : 0,
+            'item_id' => intval($itemId),
+            'lot_number' => (string) $lotNumber,
+        ]);
+        return true;
+    }
+
+    /**
+     * Lots master list for the Production "Lots" tab — one row per
+     * (item, lot) production group, restricted to LMR-SOURCED lots only:
+     * the lot must map to a Released LMR record (job order + target).
+     * Legacy or manually typed lots without an LMR link are excluded.
+     *
+     * Columns: item info, job order (Released LMR reference), LMR target,
+     * total produced (production_history sum — the reconcile source of
+     * truth), delivered, available balance, and the manual closed override
+     * merged with the auto-close rule (produced >= target).
+     */
+    public function getAllProductionLots() {
+        $conn = self::getConnection();
+
+        // LMR records ARE the lot source: every Released LMR with a lot
+        // number shows up in the Lots tab immediately (produced 0, ready
+        // to use) — production entries only enrich the row afterwards.
+        $targStmt = $conn->prepare("
+            SELECT ih.item_id,
+                   MAX(ih.item_code) AS item_code,
+                   MAX(ih.item_description) AS item_description,
+                   MAX(ih.item_uom) AS item_uom,
+                   l.lot_number,
+                   GROUP_CONCAT(DISTINCT l.lmr_number SEPARATOR ', ') AS job_orders,
+                   MAX(COALESCE(li_sum.qty_sum, l.qty_ordered)) AS target_qty
+            FROM lmr_orders l
+            JOIN items ih ON ih.item_code = l.item_code AND ih.`remove` = 0
+            LEFT JOIN (
+                SELECT lmr_id, item_id, SUM(qty_ordered) AS qty_sum
+                FROM lmr_order_items
+                GROUP BY lmr_id, item_id
+            ) li_sum ON li_sum.lmr_id = l.lmr_id AND li_sum.item_id = ih.item_id
+            WHERE l.lmr_status = 'Released'
+              AND TRIM(COALESCE(l.lot_number, '')) <> ''
+            GROUP BY ih.item_id, l.lot_number
+            ORDER BY MAX(l.lmr_id) DESC
+        ");
+        $targStmt->execute();
+        $targets = [];
+        while ($r = $targStmt->fetch(\PDO::FETCH_ASSOC)) {
+            $key = intval($r['item_id']) . '|' . $r['lot_number'];
+            if (!isset($targets[$key])) {
+                $targets[$key] = [
+                    'item_id' => intval($r['item_id']),
+                    'lot_number' => $r['lot_number'],
+                    'item_code' => $r['item_code'],
+                    'item_description' => $r['item_description'],
+                    'item_uom' => $r['item_uom'],
+                    'job_order' => $r['job_orders'],
+                    'target_qty' => floatval($r['target_qty']),
+                ];
+            } elseif (floatval($r['target_qty']) > $targets[$key]['target_qty']) {
+                $targets[$key]['target_qty'] = floatval($r['target_qty']);
+            }
+        }
+
+        // Produced per (item, lot) — production_history is the reconcile
+        // source of truth; 0 when no production entry exists yet.
+        $produced = [];
+        $pStmt = $conn->prepare("
+            SELECT item_id, lot_number, SUM(added_quantity) AS produced
+            FROM production_history WHERE is_removed = 0
+            GROUP BY item_id, lot_number
+        ");
+        $pStmt->execute();
+        while ($p = $pStmt->fetch(\PDO::FETCH_ASSOC)) {
+            $produced[intval($p['item_id']) . '|' . $p['lot_number']] = floatval($p['produced']);
+        }
+
+        $allDelivered = $this->getLotDeliveries();
+
+        $blStmt = $conn->prepare("SELECT lot_id, SUM(quantity) as total_backloaded FROM backloads WHERE `remove` = 0 GROUP BY lot_id");
+        $blStmt->execute();
+        $allBackloaded = [];
+        while ($bl = $blStmt->fetch()) {
+            $allBackloaded[intval($bl['lot_id'])] = intval($bl['total_backloaded']);
+        }
+
+        // production_lots groups: pool qty, delivered/backload and manual
+        // close override — absent for not-yet-produced LMR lots.
+        $rows = $conn->prepare("
+            SELECT pl.item_id, pl.lot_number, MIN(pl.lot_date) AS lot_date,
+                   MAX(pl.lot_closed_manual) AS manual_flag, MAX(pl.last_update) AS last_update,
+                   SUM(pl.quantity_produced) AS lot_pool_qty
+            FROM production_lots pl
+            WHERE pl.is_removed = 0
+            GROUP BY pl.item_id, pl.lot_number
+            ORDER BY last_update DESC
+        ");
+        $rows->execute();
+        $lotGroups = [];
+        while ($g = $rows->fetch(\PDO::FETCH_ASSOC)) {
+            $lotGroups[intval($g['item_id']) . '|' . $g['lot_number']] = $g;
+        }
+
+        $idxStmt = $conn->prepare("
+            SELECT lot_id, item_id, lot_number
+            FROM production_lots
+            WHERE is_removed = 0
+        ");
+        $idxStmt->execute();
+        $deliveredByGroup = [];
+        $blByGroup = [];
+        while ($g = $idxStmt->fetch(\PDO::FETCH_ASSOC)) {
+            $key = intval($g['item_id']) . '|' . $g['lot_number'];
+            $deliveredByGroup[$key] = ($deliveredByGroup[$key] ?? 0)
+                + ($allDelivered[intval($g['lot_id'])] ?? 0);
+            $blByGroup[$key] = ($blByGroup[$key] ?? 0)
+                + ($allBackloaded[intval($g['lot_id'])] ?? 0);
+        }
+
+        $out = [];
+        foreach ($targets as $key => $gov) {
+            if ($gov['target_qty'] <= 0) {
+                continue;
+            }
+
+            $produced = floatval($produced[$key] ?? 0);
+            $group = $lotGroups[$key] ?? null;
+            $poolQty = $group !== null ? floatval($group['lot_pool_qty'] ?? 0) : $produced;
+            $delivered = $deliveredByGroup[$key] ?? 0;
+            $backloaded = $blByGroup[$key] ?? 0;
+
+            $flag = $group !== null ? $group['manual_flag'] : null;
+            $manual = ($flag === null || $flag === '') ? null : (intval($flag) === 1 ? 1 : 0);
+            $autoClosed = $produced >= $gov['target_qty'];
+
+            $out[] = [
+                'item_id' => $gov['item_id'],
+                'lot_number' => $gov['lot_number'],
+                'item_code' => $gov['item_code'],
+                'item_description' => $gov['item_description'],
+                'item_uom' => $gov['item_uom'],
+                'lot_date' => $group['lot_date'] ?? null,
+                'last_update' => $group['last_update'] ?? null,
+                'job_order' => $gov['job_order'],
+                'target_qty' => $gov['target_qty'],
+                'total_produced' => round($poolQty, 4),
+                'production_history_qty' => round($produced, 4),
+                'quantity_delivered' => $delivered,
+                'available_balance' => max(0, $poolQty - $delivered + $backloaded),
+                'manual_closed' => $manual,
+                'lot_closed' => $manual !== null ? ($manual === 1) : $autoClosed,
+            ];
+        }
+
+        return $out;
+    }
+
+    public function searchItems($query) {
         return $this->catalogModel->searchItems($query);
     }
 

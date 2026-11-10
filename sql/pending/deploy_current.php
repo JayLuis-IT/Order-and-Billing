@@ -914,4 +914,14 @@ $record20->execute(['lmr-release-consumes-materials-v1']);
 
 // ─── End Phase 20 ───────────────────────────────────────────────────────
 
+echo "\n--- Phase 21: manual lot close (FG Input / lot tracker) ---\n";
+
+addColumn($pdo, 'production_lots', 'lot_closed_manual', 'TINYINT(1) NULL DEFAULT NULL', 'last_update');
+
+$record21 = $pdo->prepare('INSERT INTO schema_migrations (migration_key) VALUES (?)
+    ON DUPLICATE KEY UPDATE applied_at = CURRENT_TIMESTAMP');
+$record21->execute(['lot-manual-close-v1']);
+
+// ─── End Phase 21 ───────────────────────────────────────────────────────
+
 echo "\nSchema deployment complete.\n";

@@ -92,6 +92,11 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a class="nav-link <?= strpos($page_title ?? '', 'Lots') !== false && strpos($page_title ?? '', 'FG Input') === false ? 'active' : '' ?>" href="?controller=production&action=lots">
+                            <i class="bi bi-stack me-2"></i>Lots
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link <?= strpos($page_title ?? '', 'FG Input') !== false ? 'active' : '' ?>" href="?controller=production&action=fgInput">
                             <i class="bi bi-box-seam me-2"></i>Finished Goods Input
                         </a>

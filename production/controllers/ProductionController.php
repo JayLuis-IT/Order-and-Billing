@@ -10,11 +10,12 @@ use App\Helpers\NotificationHelper;
 class ProductionController {
     private $warehouseModel;
     private $catalogModel;
+    private $lmrModel;
 
     public function __construct() {
         $action = $_GET['action'] ?? '';
         if (!isset($_SESSION['user_id'])) {
-            if ($action === 'getPODetails' || $action === 'getCustomerPOs' || $action === 'getItemBomInfo') {
+            if ($action === 'getPODetails' || $action === 'getCustomerPOs' || $action === 'getItemBomInfo' || $action === 'getLmrLotsForItem') {
                 header('Content-Type: application/json');
                 http_response_code(401);
                 echo json_encode(['error' => 'Session expired. Please log in again.']);
@@ -23,13 +24,14 @@ class ProductionController {
             header('Location: ?controller=auth&action=login');
             exit;
         }
-        $publicActions = ['getPODetails', 'searchItems', 'fgInput', 'saveFgInput', 'getLotsForInventory', 'lmrEntry', 'getCustomerPOs', 'getItemBomInfo'];
+        $publicActions = ['getPODetails', 'searchItems', 'fgInput', 'saveFgInput', 'getLotsForInventory', 'getLmrLotsForItem', 'lots', 'lmrEntry', 'getCustomerPOs', 'getItemBomInfo'];
         if (!in_array($action, $publicActions, true) && ($_SESSION['department'] ?? '') !== 'production') {
             header('Location: ' . \App\Helpers\RoleHelper::homeUrl());
             exit;
         }
         $this->warehouseModel = new WarehouseModel();
         $this->catalogModel = new CatalogModel();
+        $this->lmrModel = new \App\Models\LmrModel();
     }
 
     public function index() {
@@ -55,6 +57,38 @@ class ProductionController {
         $this->render('fg_inventory/index', $data);
     }
 
+    /**
+     * Lots master tab: every production lot across items with its
+     * Open / Closed status (manual override or auto by LMR target) and an
+     * inline close/reopen toggle.
+     */
+    public function lots() {
+        $lots = $this->warehouseModel->getAllProductionLots();
+
+        $search = strtolower(trim($_GET['search'] ?? ''));
+        if ($search !== '') {
+            $lots = array_values(array_filter($lots, function ($l) use ($search) {
+                return str_contains(strtolower($l['item_code'] ?? ''), $search)
+                    || str_contains(strtolower($l['item_description'] ?? ''), $search)
+                    || str_contains(strtolower($l['lot_number'] ?? ''), $search)
+                    || str_contains(strtolower($l['job_order'] ?? ''), $search);
+            }));
+        }
+
+        $statusFilter = $_GET['status'] ?? '';
+        if ($statusFilter === 'open') {
+            $lots = array_values(array_filter($lots, function ($l) { return empty($l['lot_closed']); }));
+        } elseif ($statusFilter === 'closed') {
+            $lots = array_values(array_filter($lots, function ($l) { return !empty($l['lot_closed']); }));
+        }
+
+        $data['lots'] = $lots;
+        $data['search'] = $search;
+        $data['status'] = $statusFilter;
+        $data['page_title'] = 'Lots';
+        $this->render('production/lots', $data);
+    }
+
     public function getLotsForInventory() {
         header('Content-Type: application/json');
         try {
@@ -67,8 +101,7 @@ class ProductionController {
             echo json_encode($lots);
         } catch (\Exception $e) {
             error_log('getLotsForInventory error: ' . $e->getMessage());
-            http_response_code(500);
-            echo json_encode(['error' => 'Failed to load lots']);
+            http_response_code(500);            echo json_encode(['error' => 'Failed to load lots']);
         }
         exit;
     }
@@ -367,6 +400,68 @@ class ProductionController {
         exit;
     }
 
+    /**
+     * JSON: FG production lots created by Released LMRs for one FG item.
+     * GET ?controller=production&action=getLmrLotsForItem&item_id=
+     * The lot number is the Released LMR's header lot number; produced qty
+     * comes from production_history and closed = produced >= target
+     * (unless manually overridden).
+     */
+    public function getLmrLotsForItem() {
+        header('Content-Type: application/json');
+        try {
+            $itemId = intval($_GET['item_id'] ?? 0);
+            if ($itemId <= 0) {
+                echo json_encode([]);
+                exit;
+            }
+            echo json_encode($this->lmrModel->getLmrLotsForItem($itemId));
+        } catch (\Exception $e) {
+            error_log('getLmrLotsForItem error: ' . $e->getMessage());
+            http_response_code(500);
+            echo json_encode(['error' => 'Failed to load LMR lots']);
+        }
+        exit;
+    }
+
+    /**
+     * JSON: manually close / reopen a production lot (all rows of the
+     * item+lot group). POST item_id, lot_number, closed (1/0).
+     * Production department only — manual override for scrap/yield cases.
+     */
+    public function toggleLotClosed() {
+        header('Content-Type: application/json');
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'Method not allowed']);
+            exit;
+        }
+        try {
+            $itemId = intval($_POST['item_id'] ?? 0);
+            $lotNumber = trim((string) ($_POST['lot_number'] ?? ''));
+            $closed = (intval($_POST['closed'] ?? 0) === 1);
+            if ($itemId <= 0 || $lotNumber === '') {
+                http_response_code(400);
+                echo json_encode(['error' => 'Item and lot are required.']);
+                exit;
+            }
+            $ok = $this->warehouseModel->setLotClosedManual($itemId, $lotNumber, $closed);
+            AuditModel::log(
+                $_SESSION['user_id'] ?? 0,
+                'LOT_STATUS_CHANGE', 'production',
+                ($closed ? 'Manually closed' : 'Manually re-opened') . " lot {$lotNumber} (item #{$itemId})",
+                null, ['closed' => $closed],
+                'production_lot', $itemId
+            );
+            echo json_encode(['success' => true, 'changed' => $ok, 'closed' => $closed]);
+        } catch (\Exception $e) {
+            error_log('toggleLotClosed error: ' . $e->getMessage());
+            http_response_code(500);
+            echo json_encode(['error' => 'Failed to update lot status']);
+        }
+        exit;
+    }
+
     public function saveFgInput() {
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
             header('Location: ?controller=production&action=fgInput');
@@ -386,6 +481,7 @@ class ProductionController {
                 $shifts = $_POST['shift'] ?? [];
                 $rejectStatuses = $_POST['reject_status'] ?? [];
                 $stsRemarks = $_POST['sts_remarks'] ?? [];
+                $markClosed = $_POST['mark_closed'] ?? [];
                 $preparedByName = trim($_POST['prepared_by_name'] ?? '') ?: null;
                 $checkedByName = trim($_POST['checked_by_name'] ?? '') ?: null;
                 $receivedByName = trim($_POST['received_by_name'] ?? '') ?: null;
@@ -396,8 +492,10 @@ class ProductionController {
                 if (!is_array($shifts)) $shifts = [$shifts];
                 if (!is_array($rejectStatuses)) $rejectStatuses = [$rejectStatuses];
                 if (!is_array($stsRemarks)) $stsRemarks = [$stsRemarks];
+                if (!is_array($markClosed)) $markClosed = [$markClosed];
 
                 $itemCache = [];
+                $lmrLotCache = [];
                 $savedCount = 0;
                 $savedItemDescriptions = [];
                 $savedHistoryIds = [];
@@ -450,6 +548,27 @@ class ProductionController {
                     $lotQtyStmt = $conn->prepare("SELECT COALESCE(SUM(added_quantity), 0) as total_qty FROM production_history WHERE item_id = :item_id AND lot_number = :lot_number AND is_removed = 0");
                     $lotQtyStmt->execute(['item_id' => $item_id, 'lot_number' => $lotNumber]);
                     $previousLotQty = intval($lotQtyStmt->fetchColumn());
+
+                    // Lot governance: FG lots must come from a Released LMR
+                    // (lot = the LMR's header lot number). Closed lots (produced
+                    // >= LMR target) are rejected; the final shortage-filling
+                    // input may overshoot the target.
+                    if (!isset($lmrLotCache[$item_id])) {
+                        $lmrLotCache[$item_id] = $this->lmrModel->getLmrLotsForItem(intval($item_id));
+                    }
+                    $validLot = null;
+                    foreach ($lmrLotCache[$item_id] as $l) {
+                        if (trim((string) $l['lot_number']) === $lotNumber) {
+                            $validLot = $l;
+                            break;
+                        }
+                    }
+                    if ($validLot === null) {
+                        throw new \RuntimeException('Row ' . ($i + 1) . ': Lot "' . $lotNumber . '" is not an LMR lot for ' . $item['item_code'] . '. Choose a lot from the LMR lots list.');
+                    }
+                    if (!empty($validLot['closed'])) {
+                        throw new \RuntimeException('Row ' . ($i + 1) . ': Lot "' . $lotNumber . '" is Closed — ' . $validLot['produced_qty'] . ' / ' . $validLot['target_qty'] . ' produced for ' . $item['item_code'] . '. Closed lots cannot receive further input.');
+                    }
 
                     $pcsVal = intval($pcsPerCases[$i] ?? 0);
                     if ($pcsVal <= 0) {
@@ -504,6 +623,13 @@ class ProductionController {
                     }
 
                     $this->saveItemConversionIfNeeded(null, intval($pcsPerCases[$i] ?? 0), $item_id, true);
+
+                    // Manual "Mark this lot as Closed after saving" — yields
+                    // automatically-closed status for lots aborted early
+                    // (scrap / yield). The flag stays until re-opened.
+                    if (intval($markClosed[$i] ?? 0) === 1) {
+                        $this->warehouseModel->setLotClosedManual(intval($item_id), $lotNumber, true);
+                    }
                     $savedCount++;
                 }
 

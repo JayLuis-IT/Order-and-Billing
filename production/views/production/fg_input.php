@@ -41,22 +41,21 @@
                             </div>
                         </div>
                     </div>
-                    <div class="row g-2 align-items-end">
-                        <div class="col-md-2">
-                            <label class="form-label">Lot Number <span class="text-danger">*</span></label>
-                            <input type="text" name="lot_number[]" class="form-control" placeholder="e.g. 152-202" required>
+                    <div class="row g-2 align-items-start">
+                        <div class="col-md-3">
+                            <label class="form-label fw-bold">LOT NUMBER <span class="text-danger">*</span></label>
+                            <select name="lot_number[]" class="form-select lot-number-select" data-entry-item="" required>
+                                <option value="">Select item first</option>
+                            </select>
+                            <div class="lot-live-info text-muted small" style="min-height:1.2em;"></div>
                         </div>
                         <div class="col-md-2">
-                            <label class="form-label">Add Quantity <span class="text-danger">*</span></label>
+                            <label class="form-label">ADD QUANTITY <span class="text-danger">*</span></label>
                             <input type="number" name="added_quantity[]" class="form-control" min="1" required>
                             <div class="lot-live-preview text-muted small" style="position:absolute; bottom:-1.4em; left:0; right:0; min-height:1.2em;"></div>
                         </div>
                         <div class="col-md-2">
-                            <label class="form-label">PCS to CASE</label>
-                            <input type="number" name="pcs_per_case[]" class="form-control" min="1" placeholder="PCS to CASE">
-                        </div>
-                        <div class="col-md-2">
-                            <label class="form-label">Shift <span class="text-danger">*</span></label>
+                            <label class="form-label">SHIFT <span class="text-danger">*</span></label>
                             <select name="shift[]" class="form-select filter-select" required>
                                 <option value="">-- Select --</option>
                                 <option value="1st Shift">1st Shift</option>
@@ -65,14 +64,23 @@
                             </select>
                         </div>
                         <div class="col-md-2">
-                            <label class="form-label">Status</label>
+                            <label class="form-label">STATUS</label>
                             <select name="reject_status[]" class="form-select filter-select">
                                 <option value="Good">Good</option>
                             </select>
                         </div>
-                        <div class="col-md-2 text-end">
+                        <div class="col-md-2">
+                            <label class="form-label fw-bold">MARK LOT AS CLOSE</label>
+                            <div class="form-check form-switch d-flex align-items-center gap-2">
+                                <!-- Hidden 0 keeps mark_closed[] aligned with other per-row arrays -->
+                                <input type="hidden" name="mark_closed[]" value="0" class="mark-closed-flag">
+                                <input type="checkbox" class="form-check-input mark-closed-toggle" onchange="this.closest('.lot-entry').querySelector('.mark-closed-flag').value = this.checked ? 1 : 0;">
+                                <label class="form-check-label small">After save, close this lot</label>
+                            </div>
+                        </div>
+                        <div class="col-md-1 text-end">
                             <label class="form-label">&nbsp;</label>
-                            <button type="button" class="btn btn-danger btn-sm remove-lot" style="display:none;"><i class="bi bi-trash"></i> Remove</button>
+                            <button type="button" class="btn btn-danger btn-sm remove-lot" style="display:none;"><i class="bi bi-trash"></i></button>
                         </div>
                     </div>
                     <div class="row g-2 mt-1">
@@ -123,6 +131,85 @@
 document.addEventListener('DOMContentLoaded', function() {
     var saving = false;
 
+    function setLotSelectLoading(entry) {
+        var lotSelect = entry.querySelector('select[name="lot_number[]"]');
+        if (!lotSelect) return;
+        lotSelect.innerHTML = '<option value="">Loading LMR lots...</option>';
+        lotSelect.setAttribute('data-entry-item', '');
+        lotSelect.classList.remove('is-invalid');
+        setLotInfo(entry, null);
+    }
+
+    function setLotInfo(entry, lot) {
+        var info = entry.querySelector('.lot-live-info');
+        if (!info) return;
+        if (!lot) { info.textContent = ''; return; }
+        // Keep figures out of the operator's view — only closed state matters
+        info.innerHTML = lot.closed
+            ? '<span class="text-danger fw-semibold"><i class="bi bi-lock-fill me-1"></i>This lot is Closed</span>'
+            : '<span class="text-success"><i class="bi bi-unlock me-1"></i>Open lot</span>';
+    }
+
+    function renderLotSelect(entry, itemId, lots) {
+        var lotSelect = entry.querySelector('select[name="lot_number[]"]');
+        if (!lotSelect) return;
+        entry._lmrLots = lots;
+        lotSelect.innerHTML = '';
+        lotSelect.setAttribute('data-entry-item', String(itemId));
+        lotSelect.classList.remove('is-invalid');
+        setLotInfo(entry, null);
+
+        if (!lots || !lots.length) {
+            lotSelect.appendChild(new Option('No LMR lots for this item', ''));
+            return;
+        }
+        // Closed ones stay visible but disabled; label is the lot number only.
+        var anyOpen = false;
+        lots.forEach(function(lot) {
+            var label = lot.lot_number + (lot.closed ? ' [Closed]' : '');
+            var opt = new Option(label, lot.lot_number, false, false);
+            if (lot.closed) {
+                opt.disabled = true;
+            } else {
+                anyOpen = true;
+            }
+            lotSelect.appendChild(opt);
+        });
+        if (!anyOpen) {
+            lotSelect.appendChild(new Option('— All lots closed for this item —', ''));
+        }
+    }
+
+    function loadLmrLots(entry, itemId) {
+        var lotSelect = entry.querySelector('select[name="lot_number[]"]');
+        if (!lotSelect) return;
+        setLotSelectLoading(entry);
+        lotSelect.setAttribute('data-entry-item', String(itemId));
+        fetch('?controller=production&action=getLmrLotsForItem&item_id=' + encodeURIComponent(itemId), {
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        })
+            .then(function(r) { return r.json(); })
+            .then(function(lots) {
+                // Ignore stale responses for a previous item selection
+                if (entry.querySelector('.selected-item-id').value !== String(itemId)) return;
+                renderLotSelect(entry, itemId, Array.isArray(lots) ? lots : []);
+            })
+            .catch(function() {
+                if (entry.querySelector('.selected-item-id').value !== String(itemId)) return;
+                lotSelect.innerHTML = '<option value="">Failed to load LMR lots — reselect the item</option>';
+                lotSelect.setAttribute('data-entry-item', '');
+            });
+    }
+
+    function resetLotEntry(entry) {
+        var lotSelect = entry.querySelector('select[name="lot_number[]"]');
+        if (!lotSelect) return;
+        lotSelect.innerHTML = '<option value="">Select item first</option>';
+        lotSelect.setAttribute('data-entry-item', '');
+        lotSelect.classList.remove('is-invalid');
+        setLotInfo(entry, null);
+    }
+
     function initItemSearch(entry) {
         var searchInput = entry.querySelector('.item-search-input');
         var dropdown = entry.querySelector('.item-dropdown');
@@ -171,10 +258,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                 selectedItemInfo.classList.remove('d-none');
                                 dropdown.classList.add('d-none');
                                 entry.setAttribute('data-uom-conversion', item.uom_conversion || '');
-                                var pcsInput = entry.querySelector('input[name="pcs_per_case[]"]');
-                                if (pcsInput && !pcsInput.value && item.uom_conversion) {
-                                    pcsInput.value = item.uom_conversion;
-                                }
+                                loadLmrLots(entry, item.item_id);
                             });
                             div.addEventListener('mouseenter', function() { this.style.background = '#f0f4ff'; });
                             div.addEventListener('mouseleave', function() { this.style.background = ''; });
@@ -195,6 +279,7 @@ document.addEventListener('DOMContentLoaded', function() {
             selectedIdInput.value = '';
             searchInput.value = '';
             selectedItemInfo.classList.add('d-none');
+            resetLotEntry(entry);
         });
     }
 
@@ -220,6 +305,18 @@ document.addEventListener('DOMContentLoaded', function() {
                 previewDiv.innerHTML = '<i class="bi bi-calculator me-1"></i>Adding <strong>' + qty.toLocaleString() + '</strong> pcs';
             });
         }
+
+        var lotSelect = entry.querySelector('select[name="lot_number[]"]');
+        if (lotSelect) {
+            lotSelect.addEventListener('change', function() {
+                var lots = entry._lmrLots || [];
+                var chosen = null;
+                for (var i = 0; i < lots.length; i++) {
+                    if (String(lots[i].lot_number) === this.value) { chosen = lots[i]; break; }
+                }
+                setLotInfo(entry, chosen);
+            });
+        }
     }
 
     var firstEntry = document.querySelector('#lotContainer .lot-entry');
@@ -233,8 +330,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
         entry.querySelectorAll('input').forEach(function(el) { el.value = ''; });
         entry.querySelectorAll('select').forEach(function(el) { el.selectedIndex = 0; });
+        entry.querySelectorAll('.mark-closed-flag').forEach(function(el) { el.value = '0'; });
+        entry.querySelectorAll('.mark-closed-toggle').forEach(function(el) { el.checked = false; });
         entry.querySelectorAll('.selected-item-info').forEach(function(el) { el.classList.add('d-none'); });
         entry.querySelectorAll('.item-dropdown').forEach(function(el) { el.classList.add('d-none'); });
+        resetLotEntry(entry);
+        entry.setAttribute('data-uom-conversion', '');
 
         container.appendChild(entry);
         initLotEntry(entry);
@@ -282,7 +383,8 @@ document.addEventListener('DOMContentLoaded', function() {
         // Validate every lot entry
         entries.forEach(function(entry, idx) {
             var itemId = entry.querySelector('.selected-item-id').value.trim();
-            var lotNum = entry.querySelector('input[name="lot_number[]"]').value.trim();
+            var lotSelect = entry.querySelector('select[name="lot_number[]"]');
+            var lotNum = lotSelect.value.trim();
             var qty = parseInt(entry.querySelector('input[name="added_quantity[]"]').value) || 0;
             var shift = entry.querySelector('select[name="shift[]"]').value;
 
@@ -297,8 +399,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (searchInput) searchInput.classList.add('is-invalid');
             }
             if (!lotNum) {
-                missing.push('Lot Number');
-                entry.querySelector('input[name="lot_number[]"]').classList.add('is-invalid');
+                missing.push(lotSelect.getAttribute('data-entry-item')
+                    ? 'an open LMR lot (all closed or none for this item)'
+                    : 'Lot Number');
+                lotSelect.classList.add('is-invalid');
             }
             if (qty <= 0) {
                 missing.push('Quantity');
@@ -324,21 +428,14 @@ document.addEventListener('DOMContentLoaded', function() {
 
         var lotsHtml = '<table class="table table-sm table-bordered"><thead><tr><th>Item</th><th>Lot No.</th><th>Quantity</th><th>PCS/Case</th><th>Shift</th></tr></thead><tbody>';
         entries.forEach(function(entry) {
-            var lotNum = entry.querySelector('input[name="lot_number[]"]').value.trim();
+            var lotNum = entry.querySelector('select[name="lot_number[]"]').value.trim();
             var qty = entry.querySelector('input[name="added_quantity[]"]').value;
-            var conv = entry.querySelector('input[name="pcs_per_case[]"]').value;
             var defaultConv = entry.getAttribute('data-uom-conversion') || '';
+            var displayConv = defaultConv || '-';
             var shift = entry.querySelector('select[name="shift[]"]').value;
             var itemName = entry.querySelector('.selected-item-name') ? entry.querySelector('.selected-item-name').textContent : '';
             if (lotNum && parseInt(qty) > 0) {
-                var displayConv = conv || defaultConv || '-';
-                var warnBadge = '';
-                if (!conv && !defaultConv) {
-                    warnBadge = ' <span class="badge bg-warning text-dark" title="This item has no case conversion set. The PCS/Case value will be null."><i class="bi bi-exclamation-triangle"></i> No CS conv</span>';
-                } else if (!conv && defaultConv) {
-                    displayConv = defaultConv + ' <small class="text-muted">(default)</small>';
-                }
-                lotsHtml += '<tr><td>' + itemName + '</td><td>' + lotNum + '</td><td>' + qty + '</td><td>' + displayConv + warnBadge + '</td><td>' + shift + '</td></tr>';
+                lotsHtml += '<tr><td>' + itemName + '</td><td>' + lotNum + '</td><td>' + qty + '</td><td>' + displayConv + ' <small class="text-muted">(default)</small></td><td>' + shift + '</td></tr>';
             }
         });
         lotsHtml += '</tbody></table>';

@@ -110,10 +110,11 @@
                                 <th class="text-end">Available Balance</th>
                                 <th>Date Created</th>
                                 <th>Created By</th>
+                                <th class="text-center">Lot Status</th>
                             </tr>
                         </thead>
                         <tbody id="lotTableBody">
-                            <tr><td colspan="7" class="text-center text-muted py-3">Loading...</td></tr>
+                            <tr><td colspan="8" class="text-center text-muted py-3">Loading...</td></tr>
                         </tbody>
                         <tfoot id="lotTableFoot" style="display:none;">
                             <tr class="table-light fw-bold">
@@ -122,7 +123,7 @@
                                 <td class="text-end" id="lotTotalProduced">0</td>
                                 <td class="text-end" id="lotTotalDelivered">0</td>
                                 <td class="text-end" id="lotTotalAvailable">0</td>
-                                <td colspan="2"></td>
+                                <td colspan="3"></td>
                             </tr>
                         </tfoot>
                     </table>
@@ -141,15 +142,16 @@ document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('lotItemName').textContent = itemName;
             var tbody = document.getElementById('lotTableBody');
             var foot = document.getElementById('lotTableFoot');
-            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-3">Loading...</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-3">Loading...</td></tr>';
             foot.style.display = 'none';
+            window._lotItemId = itemId;
 
             fetch('?controller=production&action=getLotsForInventory&item_id=' + itemId)
                 .then(function(r) { return r.json(); })
                 .then(function(lots) {
                     tbody.innerHTML = '';
                     if (!lots || lots.length === 0) {
-                        tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-3">No lots found</td></tr>';
+                        tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-3">No lots found</td></tr>';
                         return;
                     }
                     var totalProduced = 0, totalDelivered = 0, totalAvailable = 0;
@@ -162,6 +164,30 @@ document.addEventListener('DOMContentLoaded', function() {
                         totalAvailable += available;
                         var date = lot.lot_date || lot.date_created || '';
                         if (date.length > 10) date = date.substring(0, 10);
+
+                        var statusHtml;
+                        if (lot.lmr_target_qty !== null && lot.lmr_target_qty !== undefined && Number(lot.lmr_target_qty) > 0) {
+                            var prodTarget = (lot.lmr_produced_qty || 0).toLocaleString() + '/' + Number(lot.lmr_target_qty).toLocaleString();
+                            var checked = lot.lot_closed ? ' checked' : '';
+                            var title = lot.manual_closed === null || lot.manual_closed === undefined
+                                ? 'Auto-closed because produced reached the LMR target (' + prodTarget + '). Toggle to re-open.'
+                                : (lot.manual_closed === 1 ? 'Manually closed. Toggle to re-open.' : 'Manually re-opened. Toggle to close.');
+                            statusHtml = '<div class="form-check form-switch d-inline-block">' +
+                                '<input type="checkbox" class="form-check-input lot-close-switch" data-lot="' +
+                                encodeURIComponent(lot.lot_number || '') + '"' + checked +
+                                ' title="' + title + '">' +
+                                '<span class="lot-target-info small text-muted ms-1">' + prodTarget + '</span>' +
+                                (lot.manual_closed === 1 ? ' <span class="badge bg-dark" title="Manually closed">manual</span>' : '') +
+                                '</div>';
+                        } else {
+                            var checkedPlain = lot.lot_closed ? ' checked' : '';
+                            statusHtml = '<div class="form-check form-switch d-inline-block">' +
+                                '<input type="checkbox" class="form-check-input lot-close-switch" data-lot="' +
+                                encodeURIComponent(lot.lot_number || '') + '"' + checkedPlain +
+                                ' title="Lot closed by operator — toggle to change">' +
+                                '</div>';
+                        }
+
                         tbody.innerHTML += '<tr>' +
                             '<td><strong>' + (lot.lot_number || '-') + '</strong></td>' +
                             '<td class="text-center">' + (lot.pcs_per_case || '&ndash;') + '</td>' +
@@ -170,6 +196,7 @@ document.addEventListener('DOMContentLoaded', function() {
                             '<td class="text-end">' + available.toLocaleString() + '</td>' +
                             '<td>' + date + '</td>' +
                             '<td>' + (lot.created_by_name || '&ndash;') + '</td>' +
+                            '<td class="text-center">' + statusHtml + '</td>' +
                             '</tr>';
                     });
                     document.getElementById('lotTotalProduced').textContent = totalProduced.toLocaleString();
@@ -180,9 +207,48 @@ document.addEventListener('DOMContentLoaded', function() {
                     modal.show();
                 })
                 .catch(function() {
-                    tbody.innerHTML = '<tr><td colspan="7" class="text-center text-danger py-3">Failed to load lots</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-danger py-3">Failed to load lots</td></tr>';
                 });
         });
+    });
+
+    document.addEventListener('change', function(e) {
+        if (!e.target.matches('.lot-close-switch')) return;
+        var chk = e.target;
+        var lot = decodeURIComponent(chk.getAttribute('data-lot') || '');
+        var itemId = window._lotItemId;
+        chk.disabled = true;
+        fetch('?controller=production&action=toggleLotClosed', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            credentials: 'same-origin',
+            body: 'item_id=' + encodeURIComponent(itemId) + '&lot_number=' + encodeURIComponent(lot) + '&closed=' + (chk.checked ? 1 : 0)
+        })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data && data.success) {
+                    chk.disabled = false;
+                    var tr = chk.closest('tr');
+                    if (tr) {
+                        var lotCell = tr.querySelector('td');
+                        lotCell.classList.toggle('text-muted', chk.checked);
+                        var label = tr.querySelector('.badge');
+                        if (label) { if (!chk.checked) { label.remove(); } }
+                        if (chk.checked && !tr.querySelector('.badge.bg-dark')) {
+                            lotCell.innerHTML += ' <span class="badge bg-dark" title="Manually closed">manual</span>';
+                        }
+                    }
+                    return;
+                }
+                chk.checked = !chk.checked;
+                chk.disabled = false;
+                Dlg.alert((data && data.error) || 'Failed to update lot status.');
+            })
+            .catch(function() {
+                chk.checked = !chk.checked;
+                chk.disabled = false;
+                Dlg.alert('Network error. Lot status not updated.');
+            });
     });
 
     var _searchTimer;

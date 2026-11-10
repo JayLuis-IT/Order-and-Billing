@@ -221,6 +221,84 @@ class LmrModel extends BaseModel {
     }
 
     /**
+     * FG production lots created by LMRs for one FG item.
+     *
+     * A lot = the Released LMR's header "Lot Number". Only Released LMRs
+     * qualify; the FG item matches either an lmr_order_items row of the LMR
+     * or (header-only LMRs) the header item_code. Target quantity comes
+     * from lmr_order_items.qty_ordered when line items exist, otherwise the
+     * header qty_ordered. Produced qty is reconciled from production_history
+     * (same source of truth the lot reconcile guard uses).
+     *
+     * Rows are deduplicated by lot number (several LMRs may share a lot:
+     * LMR references are joined, the target is the LARGEST, and the lot is
+     * open while produced < target).
+     */
+    public function getLmrLotsForItem($itemId) {
+        $iid = intval($itemId);
+        $stmt = self::getConnection()->prepare("
+            SELECT lo.lmr_ids, lo.lmr_numbers, lo.lot_number,
+                   lo.target_qty,
+                   COALESCE(ph.total_qty, 0) AS produced_qty,
+                   plo.manual_flag
+            FROM (
+                SELECT GROUP_CONCAT(l.lmr_id) AS lmr_ids,
+                       GROUP_CONCAT(l.lmr_number SEPARATOR ', ') AS lmr_numbers,
+                       l.lot_number,
+                       MAX(COALESCE(li.total_qty, l.qty_ordered)) AS target_qty
+                FROM lmr_orders l
+                JOIN items ih
+                  ON ih.item_id = :item_1
+                 AND ih.item_code = l.item_code AND ih.`remove` = 0
+                LEFT JOIN (
+                    SELECT lmr_id, SUM(qty_ordered) AS total_qty
+                    FROM lmr_order_items
+                    WHERE item_id = :item_2
+                    GROUP BY lmr_id
+                ) li ON li.lmr_id = l.lmr_id
+                WHERE l.lmr_status = 'Released'
+                  AND TRIM(COALESCE(l.lot_number, '')) <> ''
+                  AND (li.lmr_id IS NOT NULL OR EXISTS (SELECT 1 FROM lmr_order_items lx WHERE lx.lmr_id = l.lmr_id LIMIT 1) = 0)
+                GROUP BY l.lot_number
+            ) lo
+            LEFT JOIN (
+                SELECT lot_number, SUM(added_quantity) AS total_qty
+                FROM production_history
+                WHERE item_id = :item_3 AND is_removed = 0
+                GROUP BY lot_number
+            ) ph ON ph.lot_number = lo.lot_number
+            LEFT JOIN (
+                SELECT item_id, lot_number, MAX(lot_closed_manual) AS manual_flag
+                FROM production_lots
+                WHERE is_removed = 0
+                GROUP BY item_id, lot_number
+            ) plo ON plo.item_id = :item_4 AND plo.lot_number = lo.lot_number
+            ORDER BY lo.lmr_ids ASC
+        ");
+        $stmt->execute(['item_1' => $iid, 'item_2' => $iid, 'item_3' => $iid, 'item_4' => $iid]);
+        $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+        return array_map(function ($row) {
+            $target = floatval($row['target_qty'] ?? 0);
+            $produced = floatval($row['produced_qty'] ?? 0);
+            $flag = $row['manual_flag'];
+            $manual = ($flag === null || $flag === '') ? null : (intval($flag) === 1 ? 1 : 0);
+            $autoClosed = $target > 0 && $produced >= $target;
+            return [
+                'lmr_ids' => $row['lmr_ids'] ?? '',
+                'lmr_numbers' => $row['lmr_numbers'] ?? '',
+                'lot_number' => $row['lot_number'],
+                'target_qty' => round($target, 4),
+                'produced_qty' => round($produced, 4),
+                'remaining_qty' => round(max(0.0, $target - $produced), 4),
+                // Manual override wins: 1 = closed, 0 = open; null = automatic
+                'manual_closed' => $manual,
+                'auto_closed' => $autoClosed,
+                'closed' => $manual !== null ? ($manual === 1) : $autoClosed,
+            ];
+        }, $rows);
+    }
+    /**
      * Active lot allocations for one LMR ordered by item then receipt order.
      */
     public function getLotAllocations($lmrId) {
