@@ -32,6 +32,12 @@ class AdminController {
             exit;
         }
         $action = $_GET['action'] ?? '';
+        // Stale/corrupted session (user_id set but department missing) would
+        // ping-pong between here and homeUrl() forever — force a clean logout.
+        if (($_SESSION['department'] ?? '') === '') {
+            header('Location: ?controller=auth&action=logout');
+            exit;
+        }
         // The admin module is exclusive to the admin department; other
         // departments use their own modules and role landings.
         if (($_SESSION['department'] ?? '') !== 'admin') {

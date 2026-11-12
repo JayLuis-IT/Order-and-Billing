@@ -156,7 +156,13 @@ class RoleHelper
         if ($department === 'warehouse' || $department === 'qc') {
             return '?controller=' . $department;
         }
-        return '?controller=' . ($department !== '' ? $department : 'admin');
+        $known = ['admin', 'production', 'finance', 'qa', 'rnd'];
+        if ($department !== '' && in_array($department, $known, true)) {
+            return '?controller=' . $department;
+        }
+        // Unknown/empty department means a stale or corrupted session —
+        // sending the user to admin would create a redirect loop.
+        return '?controller=auth&action=logout';
     }
 
     // ─── Permission checks ────────────────────────────────────────────────────
