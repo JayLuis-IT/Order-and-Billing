@@ -88,7 +88,6 @@ $classLabel = $pr['classification'] === 'repeat_order' ? 'Repeat Order' : 'New';
         </div>
 
         <div class="meta">
-            <div class="field"><label>PR No.:</label><div class="val"><?= $fmt($pr['pr_number']) ?></div></div>
             <div class="field"><label>Date:</label><div class="val"><?= $fmt(date('F d, Y', strtotime($pr['date_created']))) ?></div></div>
             <div class="field"><label>Department:</label><div class="val"><?= $fmt(ucfirst($pr['department'])) ?></div></div>
             <div class="field"><label>Classification:</label><div class="val"><?= $fmt($classLabel) ?></div></div>

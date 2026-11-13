@@ -2,6 +2,7 @@
 namespace App\Controllers;
 
 use App\Models\PurchaseRequestModel;
+use App\Models\ProcurementPrModel;
 use App\Models\AuditModel;
 use App\Models\WarehouseModel;
 use App\Core\BaseModel;
@@ -278,22 +279,166 @@ class PrController {
         exit;
     }
 
-    /** Procurement queue — approved PRs awaiting purchasing action. */
+    /** Procurement queue — approved PRFs awaiting purchasing action. */
     public function procurement() {
         $role = $_SESSION['role'] ?? '';
         $department = $_SESSION['department'] ?? '';
-        $allowed = ($department === 'admin')
-            || ($department === 'warehouse' && in_array($role, ['whse_procurement', 'whse_admin'], true));
-        if (!$allowed) {
+        if (!$this->isProcurementAllowed()) {
             $_SESSION['error'] = 'You do not have access to that feature.';
             header('Location: ' . \App\Helpers\RoleHelper::homeUrl());
             exit;
         }
         $requests = $this->prModel->getRequests(null, 'approved');
+        $prModel = new ProcurementPrModel();
+        $prsByPrf = $prModel->getByPrfIds(array_map(function ($r) { return (int) $r['pr_id']; }, $requests));
         $this->render('procurement', [
             'page_title' => 'Purchase Requests — Procurement',
             'requests'   => $requests,
+            'prsByPrf'   => $prsByPrf,
         ]);
+    }
+
+    /** Can the current user access Procurement PR actions? */
+    private function isProcurementAllowed(): bool {
+        $role = $_SESSION['role'] ?? '';
+        $department = $_SESSION['department'] ?? '';
+        return ($department === 'admin')
+            || ($department === 'warehouse' && in_array($role, ['whse_procurement', 'whse_admin'], true));
+    }
+
+    /** JSON: approved PRF + items to prefill the Create PR modal. */
+    public function prfData() {
+        header('Content-Type: application/json');
+        if (!$this->isProcurementAllowed()) {
+            http_response_code(403);
+            echo json_encode(['error' => 'You do not have access to Procurement PRs.']);
+            exit;
+        }
+        $prf = $this->prModel->getById((int) ($_GET['id'] ?? 0));
+        if (!$prf || $prf['status'] !== 'approved') {
+            http_response_code(404);
+            echo json_encode(['error' => 'Purchase request not found or not approved.']);
+            exit;
+        }
+        $prModel = new ProcurementPrModel();
+        echo json_encode([
+            'prf'       => $prf,
+            'items'     => $this->prModel->getItems((int) $prf['pr_id']),
+            'pr_number' => ProcurementPrModel::nextPrNumber(),
+            'sites'     => ProcurementPrModel::PO_SITES,
+        ]);
+        exit;
+    }
+
+    /** Create a formal PR from an approved PRF (POST from the Create PR modal). */
+    public function createPr() {
+        if (!$this->isProcurementAllowed()) {
+            $_SESSION['error'] = 'You do not have access to that feature.';
+            header('Location: ' . \App\Helpers\RoleHelper::homeUrl());
+            exit;
+        }
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            header('Location: ?controller=pr&action=procurement');
+            exit;
+        }
+        $prf = $this->prModel->getById((int) ($_POST['prf_id'] ?? 0));
+        if (!$prf || $prf['status'] !== 'approved') {
+            $_SESSION['error'] = 'The source purchase request is not approved.';
+            header('Location: ?controller=pr&action=procurement');
+            exit;
+        }
+        $sites = ProcurementPrModel::PO_SITES;
+        $poSite = $_POST['po_site'] ?? '001';
+        $shipTo = $_POST['ship_to'] ?? '001';
+        if (!isset($sites[$poSite]) || !isset($sites[$shipTo])) {
+            $_SESSION['error'] = 'Invalid PO Site / Ship To selection.';
+            header('Location: ?controller=pr&action=procurement');
+            exit;
+        }
+        $items = [];
+        $descs   = (array) ($_POST['description'] ?? []);
+        $qtys    = (array) ($_POST['qty'] ?? []);
+        $units   = (array) ($_POST['unit'] ?? []);
+        $accts   = (array) ($_POST['account_charged'] ?? []);
+        $dates   = (array) ($_POST['date_required'] ?? []);
+        $codes   = (array) ($_POST['item_code'] ?? []);
+        foreach ($descs as $i => $desc) {
+            if (trim((string) $desc) === '') {
+                continue;
+            }
+            $qty = (float) str_replace(',', '', (string) ($qtys[$i] ?? 0));
+            if ($qty <= 0) {
+                continue;
+            }
+            $items[] = [
+                'description'     => trim((string) $desc),
+                'qty'             => $qty,
+                'unit'            => trim((string) ($units[$i] ?? '')),
+                'account_charged' => trim((string) ($accts[$i] ?? '')),
+                'date_required'   => trim((string) ($dates[$i] ?? '')),
+                'item_code'       => trim((string) ($codes[$i] ?? '')),
+            ];
+        }
+        if (!$items) {
+            $_SESSION['error'] = 'Add at least one line item with a quantity.';
+            header('Location: ?controller=pr&action=procurement');
+            exit;
+        }
+        // Accept a manually edited PR number when it matches the PR###### format;
+        // otherwise fall back to the global auto-increment sequence.
+        $prNumber = strtoupper(trim($_POST['pr_number'] ?? ''));
+        if (!preg_match('/^PR\d{1,6}$/', $prNumber)) {
+            $prNumber = ProcurementPrModel::nextPrNumber();
+        }
+        $prModel = new ProcurementPrModel();
+        $header = [
+            'pr_number'     => $prNumber,
+            'prf_id'        => (int) $prf['pr_id'],
+            'po_site_code'  => $poSite,
+            'ship_to_code'  => $shipTo,
+            'priority'      => $prf['priority'] === 'immediate' ? 'immediate' : 'standard',
+            'pr_date'       => $_POST['pr_date'] ?? date('Y-m-d'),
+            'department'    => $prf['department'],
+            'requisitioner' => $prf['prepared_by'],
+            'purpose'       => $prf['purpose'],
+            'created_by'    => (int) $_SESSION['user_id'],
+        ];
+        try {
+            $prId = $prModel->createPr($header, $items);
+            AuditModel::log($_SESSION['user_id'], 'CREATE', 'procurement_pr', 'Created Purchase Requisition ' . $header['pr_number'] . ' from PRF ' . $prf['pr_number'] . ' with ' . count($items) . ' line item(s)', null, ['pr_number' => $header['pr_number'], 'prf_number' => $prf['pr_number']], 'procurement_pr', $prId);
+            $_SESSION['success'] = 'Purchase Requisition ' . $header['pr_number'] . ' created from ' . $prf['pr_number'] . '.';
+        } catch (\Throwable $e) {
+            error_log('PR createPr error: ' . $e->getMessage());
+            $_SESSION['error'] = 'Failed to create the purchase requisition.';
+        }
+        header('Location: ?controller=pr&action=procurement');
+        exit;
+    }
+
+    /** Standalone printable Purchase Requisition (PR###### ERP format). */
+    public function printPr() {
+        if (!$this->isProcurementAllowed()) {
+            $_SESSION['error'] = 'You do not have access to that feature.';
+            header('Location: ' . \App\Helpers\RoleHelper::homeUrl());
+            exit;
+        }
+        $prModel = new ProcurementPrModel();
+        $pr = $prModel->getById((int) ($_GET['id'] ?? 0));
+        if (!$pr) {
+            $_SESSION['error'] = 'Purchase requisition not found.';
+            header('Location: ?controller=pr&action=procurement');
+            exit;
+        }
+        $items = $prModel->getItems((int) $pr['pr_id']);
+        $prModel->markPrinted((int) $pr['pr_id']);
+        $pr['printed'] = 1;
+        $sites = ProcurementPrModel::PO_SITES;
+        $poSite = $sites[$pr['po_site_code']] ?? reset($sites);
+        $shipTo = $sites[$pr['ship_to_code']] ?? reset($sites);
+        extract(['pr' => $pr, 'items' => $items, 'poSite' => $poSite, 'shipTo' => $shipTo,
+                 'poSiteCode' => $pr['po_site_code'], 'shipToCode' => $pr['ship_to_code']]);
+        include __DIR__ . '/../views/print_pr.php';
+        exit;
     }
 
     /** Soft-delete own submitted PR. */
