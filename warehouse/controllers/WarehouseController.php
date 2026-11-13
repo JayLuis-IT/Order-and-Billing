@@ -5,6 +5,7 @@ use App\Models\WarehouseModel;
 use App\Models\BackloadModel;
 use App\Models\CatalogModel;
 use App\Models\ItemImportModel;
+use App\Models\SupplierModel;
 use App\Models\AuditModel;
 use App\Helpers\Pagination;
 use App\Helpers\NotificationHelper;
@@ -17,6 +18,7 @@ class WarehouseController {
     private $backloadModel;
     private $catalogModel;
     private $itemImportModel;
+    private $supplierModel;
 
     public function __construct() {
         if (!isset($_SESSION['user_id'])) {
@@ -40,7 +42,7 @@ class WarehouseController {
         // roles can open it too (role gate below strips edit for all of them).
         $itemListReadOnly = $action === 'items' && in_array($dept, ['warehouse', 'rnd', 'admin']);
         // Item master editing (create/import/adjust SOH) is System Admin only.
-        $itemManageAllowed = in_array($action, ['storeItem', 'adjustItemSoh', 'itemImportForm', 'itemImportPreview', 'itemImportConfirm'])
+        $itemManageAllowed = in_array($action, ['storeItem', 'adjustItemSoh', 'itemImportForm', 'itemImportPreview', 'itemImportConfirm', 'itemUpdate', 'itemPriceAdd', 'itemPriceDelete', 'getItemSuppliersPrices', 'itemSupplierRemove'])
             && $dept === 'admin';
         // Edit modal (metadata-only corrections) is shared with QC for inspected records
         $poEditAllowed = $action === 'updatePurchasingPo' && in_array($dept, ['warehouse', 'qc']);
@@ -79,6 +81,7 @@ class WarehouseController {
         $this->backloadModel = new BackloadModel();
         $this->catalogModel = new CatalogModel();
         $this->itemImportModel = new ItemImportModel();
+        $this->supplierModel = new SupplierModel();
     }
 
     private function redirectToRoleHome(string $action): void {
@@ -3738,6 +3741,12 @@ class WarehouseController {
     // ─── Item Master List & ERIC Import ──────────────────────────────────────
 
     public function items() {
+        // R&D users own a copy of this page inside their own module — keep
+        // them in the R&D layout instead of the warehouse sidebar.
+        if (($_SESSION['department'] ?? '') === 'rnd') {
+            header('Location: ?controller=rnd&action=items');
+            exit;
+        }
         $search = trim($_GET['search'] ?? '');
         $typeFilter = trim($_GET['item_type'] ?? '');
         $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
@@ -3760,6 +3769,11 @@ class WarehouseController {
         $data['search'] = $search;
         $data['typeFilter'] = $typeFilter;
         $data['canEdit'] = (($_SESSION['department'] ?? '') === 'admin');
+        // Metadata edit button — System Admin here; RND gets it via rnd&action=items.
+        $data['canEditItem'] = (($_SESSION['department'] ?? '') === 'admin');
+        // Supplier dropdown for the edit modal (all non-deleted; inactive
+        // labeled in the view so an existing link is never silently dropped).
+        $data['suppliers'] = $this->supplierModel->getAll(false);
         $data['page_title'] = 'Item Master List';
         $this->render('items/index', $data);
     }
@@ -3822,6 +3836,268 @@ class WarehouseController {
 
         $_SESSION['success'] = 'Item created successfully!';
         header('Location: ?controller=warehouse&action=items');
+        exit;
+    }
+
+    public function itemUpdate() {
+        $back = '?controller=warehouse&action=items';
+        $qs = [];
+        foreach (['back_search' => 'search', 'back_type' => 'item_type', 'back_page' => 'page'] as $get => $out) {
+            $val = trim($_GET[$get] ?? '');
+            if ($val !== '' && $val !== '0') {
+                $qs[$out] = $val;
+            }
+        }
+        if ($qs) $back .= '&' . http_build_query($qs);
+
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            header('Location: ' . $back);
+            exit;
+        }
+        if (($_SESSION['department'] ?? '') !== 'admin') {
+            $_SESSION['error'] = 'Only System Admins can edit items.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $itemId = (int)($_POST['item_id'] ?? 0);
+        $description = trim($_POST['item_description'] ?? '');
+        $type = strtoupper(trim($_POST['item_type'] ?? ''));
+        $uom = trim($_POST['item_uom'] ?? '');
+
+        $item = $itemId > 0 ? $this->itemImportModel->getItemById($itemId) : null;
+        if (!$item) {
+            $_SESSION['error'] = 'Item not found.';
+            header('Location: ' . $back);
+            exit;
+        }
+        if ($description === '' || $uom === '') {
+            $_SESSION['error'] = 'Description and UOM are required.';
+            header('Location: ' . $back);
+            exit;
+        }
+        if (!in_array($type, ['RM', 'PM', 'FG', 'SFG', 'SUPPLIES'], true)) {
+            $_SESSION['error'] = 'Invalid item type.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $supplierRaw = trim($_POST['supplier_id'] ?? '');
+        $supplierId = $supplierRaw === '' ? null : (int)$supplierRaw;
+        // Passthrough of the stored primary supplier is accepted even if that
+        // supplier was soft-deleted after it was linked (the hidden input in
+        // the edit modal just carries the existing value back).
+        if ($supplierId !== null && $supplierId !== (int)($item['supplier_id'] ?? 0) && !$this->supplierModel->getById($supplierId)) {
+            $_SESSION['error'] = 'Supplier not found.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $priceRaw = trim($_POST['item_amount'] ?? '');
+        if ($priceRaw === '') {
+            $price = 0.0;
+        } elseif (!is_numeric($priceRaw) || (float)$priceRaw < 0) {
+            $_SESSION['error'] = 'Price must be a number greater than or equal to 0.';
+            header('Location: ' . $back);
+            exit;
+        } else {
+            $price = round((float)$priceRaw, 2);
+        }
+
+        $this->itemImportModel->updateItem($itemId, [
+            'item_description' => $description,
+            'item_type' => $type,
+            'item_uom' => $uom,
+            'supplier_id' => $supplierId,
+            'item_amount' => $price
+        ]);
+
+        AuditModel::log(
+            $_SESSION['user_id'],
+            'UPDATE',
+            'warehouse',
+            "Item updated: {$item['item_code']}",
+            ['item_description' => $item['item_description'], 'item_type' => $item['item_type'], 'item_uom' => $item['item_uom'],
+             'supplier_id' => $item['supplier_id'] ?? null, 'item_amount' => $item['item_amount'] ?? 0],
+            ['item_description' => $description, 'item_type' => $type, 'item_uom' => $uom,
+             'supplier_id' => $supplierId, 'item_amount' => $price],
+            'item',
+            $itemId
+        );
+
+        $_SESSION['success'] = "Item {$item['item_code']} updated successfully.";
+        header('Location: ' . $back);
+        exit;
+    }
+
+    // ─── Item price history (multi-supplier, dated) — AJAX for the edit modal ─
+
+    /** JSON payload behind the edit modal's Suppliers & Prices panes:
+     *  item basics, active supplier options for the add form, and suppliers
+     *  (with stats + dated price rows) that have at least one price. */
+    public function getItemSuppliersPrices() {
+        header('Content-Type: application/json');
+        $id = (int)($_GET['item_id'] ?? 0);
+        $item = $id > 0 ? $this->itemImportModel->getItemById($id) : null;
+        if (!$item) {
+            echo json_encode(['success' => false, 'error' => 'Item not found.']);
+            exit;
+        }
+
+        $rows = $this->itemImportModel->getPricesForItem($id);
+        $bySupplier = [];
+        foreach ($rows as $p) {   // ordered: supplier ASC, date DESC, id DESC
+            $bySupplier[(int)$p['supplier_id']][] = $p;
+        }
+
+        $suppliers = [];
+        foreach ($bySupplier as $sid => $list) {
+            $prices = [];
+            $prev = null;
+            $all = [];
+            foreach ($list as $r) {
+                $val = (float)$r['price'];
+                $all[] = $val;
+                $prices[] = [
+                    'id' => (int)$r['id'],
+                    'price' => $val,
+                    'effective_date' => $r['effective_date'],
+                    'remarks' => $r['remarks'],
+                    'delta' => $prev === null ? null : round($val - $prev, 2)
+                ];
+                $prev = $val;
+            }
+            $suppliers[] = [
+                'supplier_id' => $sid,
+                'supplier_name' => $list[0]['supplier_name'],
+                'status' => (int)$list[0]['supplier_status'],
+                'count' => count($list),
+                'latest' => $prices[0]['price'],
+                'latest_date' => $prices[0]['effective_date'],
+                'delta' => $prices[0]['delta'],
+                'min' => min($all),
+                'max' => max($all),
+                'prices' => $prices
+            ];
+        }
+
+        echo json_encode([
+            'success' => true,
+            'item' => $item,
+            'active_suppliers' => $this->supplierModel->getAll(true),
+            'suppliers' => $suppliers
+        ]);
+        exit;
+    }
+
+    public function itemPriceAdd() {
+        header('Content-Type: application/json');
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            echo json_encode(['success' => false, 'error' => 'Invalid request.']);
+            exit;
+        }
+        $itemId = (int)($_POST['item_id'] ?? 0);
+        $item = $itemId > 0 ? $this->itemImportModel->getItemById($itemId) : null;
+        if (!$item) {
+            echo json_encode(['success' => false, 'error' => 'Item not found.']);
+            exit;
+        }
+
+        $supplierId = (int)($_POST['supplier_id'] ?? 0);
+        $priceRaw = trim($_POST['price'] ?? '');
+        // Date is optional in the modal (field removed) — stamp today server-side.
+        $date = trim($_POST['effective_date'] ?? '') ?: date('Y-m-d');
+        $remarks = trim($_POST['remarks'] ?? '') ?: null;
+
+        if ($supplierId <= 0 || !$this->supplierModel->getById($supplierId)) {
+            echo json_encode(['success' => false, 'error' => 'Please select a valid supplier.']);
+            exit;
+        }
+        if ($priceRaw === '' || !is_numeric($priceRaw) || (float)$priceRaw < 0) {
+            echo json_encode(['success' => false, 'error' => 'Price must be a number greater than or equal to 0.']);
+            exit;
+        }
+        $dt = \DateTime::createFromFormat('Y-m-d', $date);
+        if (!$dt || $dt->format('Y-m-d') !== $date) {
+            echo json_encode(['success' => false, 'error' => 'Invalid effective date.']);
+            exit;
+        }
+
+        $price = round((float)$priceRaw, 2);
+        $priceId = $this->itemImportModel->addPrice([
+            'item_id' => $itemId,
+            'supplier_id' => $supplierId,
+            'price' => $price,
+            'effective_date' => $date,
+            'remarks' => $remarks,
+            'created_by' => $_SESSION['user_id']
+        ]);
+        $this->itemImportModel->syncItemAmount($itemId);
+
+        AuditModel::log($_SESSION['user_id'], 'CREATE', 'admin',
+            "Price added for {$item['item_code']}: ₱" . number_format($price, 2) . " @ {$date}",
+            null,
+            ['supplier_id' => $supplierId, 'price' => $price, 'effective_date' => $date, 'remarks' => $remarks],
+            'item_price', $priceId);
+
+        echo json_encode(['success' => true, 'message' => 'Price entry added.']);
+        exit;
+    }
+
+    public function itemPriceDelete() {
+        header('Content-Type: application/json');
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            echo json_encode(['success' => false, 'error' => 'Invalid request.']);
+            exit;
+        }
+        $id = (int)($_POST['id'] ?? 0);
+
+        $affectedItemId = $id > 0 ? $this->itemImportModel->deletePrice($id) : null;
+        if ($affectedItemId === null) {
+            echo json_encode(['success' => false, 'error' => 'Price entry not found.']);
+            exit;
+        }
+        $this->itemImportModel->syncItemAmount($affectedItemId);
+
+        AuditModel::log($_SESSION['user_id'], 'DELETE', 'admin',
+            'Deleted price entry #' . $id . ' (item #' . $affectedItemId . ')',
+            ['id' => $id, 'item_id' => $affectedItemId], null,
+            'item_price', $id);
+
+        echo json_encode(['success' => true, 'message' => 'Price entry deleted.']);
+        exit;
+    }
+
+    /** Delete Supplier: drop every price row this supplier has for the item. */
+    public function itemSupplierRemove() {
+        header('Content-Type: application/json');
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            echo json_encode(['success' => false, 'error' => 'Invalid request.']);
+            exit;
+        }
+        $itemId = (int)($_POST['item_id'] ?? 0);
+        $supplierId = (int)($_POST['supplier_id'] ?? 0);
+
+        $item = $itemId > 0 ? $this->itemImportModel->getItemById($itemId) : null;
+        $supplier = $supplierId > 0 ? $this->supplierModel->getById($supplierId) : null;
+        if (!$item || !$supplier) {
+            echo json_encode(['success' => false, 'error' => 'Item or supplier not found.']);
+            exit;
+        }
+
+        $affected = $this->itemImportModel->deletePricesForSupplier($itemId, $supplierId);
+        if ($affected === null) {
+            echo json_encode(['success' => false, 'error' => 'No prices found for that supplier.']);
+            exit;
+        }
+        $this->itemImportModel->syncItemAmount($itemId);
+
+        AuditModel::log($_SESSION['user_id'], 'DELETE', 'admin',
+            "Supplier removed from {$item['item_code']}: " . $supplier['supplier_name'] . ' (all price entries)',
+            ['item_id' => $itemId, 'supplier_id' => $supplierId], null,
+            'item_price', $itemId);
+
+        echo json_encode(['success' => true, 'message' => 'Supplier removed from this item.']);
         exit;
     }
 

@@ -4,6 +4,8 @@ namespace App\Controllers;
 use App\Models\ItemModel;
 use App\Models\WarehouseModel;
 use App\Models\BomModel;
+use App\Models\ItemImportModel;
+use App\Models\SupplierModel;
 use App\Helpers\Pagination;
 use App\Models\AuditModel;
 use App\Helpers\SpreadsheetReader;
@@ -12,6 +14,8 @@ class RndController {
     private $itemModel;
     private $warehouseModel;
     private $bomModel;
+    private $itemImportModel;
+    private $supplierModel;
 
     public function __construct() {
         if (!isset($_SESSION['user_id'])) {
@@ -26,6 +30,8 @@ class RndController {
         $this->itemModel = new ItemModel();
         $this->warehouseModel = new WarehouseModel();
         $this->bomModel = new BomModel();
+        $this->itemImportModel = new ItemImportModel();
+        $this->supplierModel = new SupplierModel();
     }
 
     public function index() {
@@ -38,7 +44,7 @@ class RndController {
 
     public function rawMaterials() {
         $_SESSION['error'] = 'Items (RM PM FG) are now managed under Warehouse.';
-        header('Location: ?controller=warehouse&action=items');
+        header('Location: ?controller=rnd&action=items');
         exit;
     }
 
@@ -566,7 +572,289 @@ class RndController {
     // --- Items (RM PM FG) moved to Warehouse module ---
 
     public function items() {
-        header('Location: ?controller=warehouse&action=items');
+        $search = trim($_GET['search'] ?? '');
+        $typeFilter = trim($_GET['item_type'] ?? '');
+        $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
+        if ($page < 1) $page = 1;
+        $perPage = 20;
+
+        $filters = [];
+        if ($search !== '') $filters['search'] = $search;
+        if ($typeFilter !== '' && $typeFilter !== 'All Types') $filters['item_type'] = $typeFilter;
+
+        $total = $this->itemImportModel->countWithStock($filters);
+        $totalPages = max(1, (int)ceil($total / $perPage));
+        if ($page > $totalPages) $page = $totalPages;
+        $offset = ($page - 1) * $perPage;
+
+        $data['items'] = $this->itemImportModel->getAllWithStock($filters, $perPage, $offset);
+        $data['page'] = $page;
+        $data['totalPages'] = $totalPages;
+        $data['total'] = $total;
+        $data['search'] = $search;
+        $data['typeFilter'] = $typeFilter;
+        $data['canEdit'] = false;
+        $data['canEditItem'] = true;
+        $data['itemsController'] = 'rnd';
+        // Supplier dropdown for the edit modal (all non-deleted; inactive
+        // labeled in the view so an existing link is never silently dropped).
+        $data['suppliers'] = $this->supplierModel->getAll(false);
+        $data['page_title'] = 'Item Master List';
+        $this->renderWarehouse('items/index', $data);
+    }
+
+    public function itemUpdate() {
+        $back = '?controller=rnd&action=items';
+        $qs = [];
+        foreach (['back_search' => 'search', 'back_type' => 'item_type', 'back_page' => 'page'] as $get => $out) {
+            $val = trim($_GET[$get] ?? '');
+            if ($val !== '' && $val !== '0') {
+                $qs[$out] = $val;
+            }
+        }
+        if ($qs) $back .= '&' . http_build_query($qs);
+
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $itemId = (int)($_POST['item_id'] ?? 0);
+        $description = trim($_POST['item_description'] ?? '');
+        $type = strtoupper(trim($_POST['item_type'] ?? ''));
+        $uom = trim($_POST['item_uom'] ?? '');
+
+        $item = $itemId > 0 ? $this->itemImportModel->getItemById($itemId) : null;
+        if (!$item) {
+            $_SESSION['error'] = 'Item not found.';
+            header('Location: ' . $back);
+            exit;
+        }
+        if ($description === '' || $uom === '') {
+            $_SESSION['error'] = 'Description and UOM are required.';
+            header('Location: ' . $back);
+            exit;
+        }
+        if (!in_array($type, ['RM', 'PM', 'FG', 'SFG', 'SUPPLIES'], true)) {
+            $_SESSION['error'] = 'Invalid item type.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $supplierRaw = trim($_POST['supplier_id'] ?? '');
+        $supplierId = $supplierRaw === '' ? null : (int)$supplierRaw;
+        // Passthrough of the stored primary supplier is accepted even if that
+        // supplier was soft-deleted after it was linked (the hidden input in
+        // the edit modal just carries the existing value back).
+        if ($supplierId !== null && $supplierId !== (int)($item['supplier_id'] ?? 0) && !$this->supplierModel->getById($supplierId)) {
+            $_SESSION['error'] = 'Supplier not found.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $priceRaw = trim($_POST['item_amount'] ?? '');
+        if ($priceRaw === '') {
+            $price = 0.0;
+        } elseif (!is_numeric($priceRaw) || (float)$priceRaw < 0) {
+            $_SESSION['error'] = 'Price must be a number greater than or equal to 0.';
+            header('Location: ' . $back);
+            exit;
+        } else {
+            $price = round((float)$priceRaw, 2);
+        }
+
+        $this->itemImportModel->updateItem($itemId, [
+            'item_description' => $description,
+            'item_type' => $type,
+            'item_uom' => $uom,
+            'supplier_id' => $supplierId,
+            'item_amount' => $price
+        ]);
+
+        AuditModel::log(
+            $_SESSION['user_id'],
+            'UPDATE',
+            'rnd',
+            "Item updated: {$item['item_code']}",
+            ['item_description' => $item['item_description'], 'item_type' => $item['item_type'], 'item_uom' => $item['item_uom'],
+             'supplier_id' => $item['supplier_id'] ?? null, 'item_amount' => $item['item_amount'] ?? 0],
+            ['item_description' => $description, 'item_type' => $type, 'item_uom' => $uom,
+             'supplier_id' => $supplierId, 'item_amount' => $price],
+            'item',
+            $itemId
+        );
+
+        $_SESSION['success'] = "Item {$item['item_code']} updated successfully.";
+        header('Location: ' . $back);
+        exit;
+    }
+
+    // ─── Item price history (multi-supplier, dated) — AJAX for the edit modal ─
+
+    /** JSON payload behind the edit modal's Suppliers & Prices panes. */
+    public function getItemSuppliersPrices() {
+        header('Content-Type: application/json');
+        $id = (int)($_GET['item_id'] ?? 0);
+        $item = $id > 0 ? $this->itemImportModel->getItemById($id) : null;
+        if (!$item) {
+            echo json_encode(['success' => false, 'error' => 'Item not found.']);
+            exit;
+        }
+
+        $rows = $this->itemImportModel->getPricesForItem($id);
+        $bySupplier = [];
+        foreach ($rows as $p) {   // ordered: supplier ASC, date DESC, id DESC
+            $bySupplier[(int)$p['supplier_id']][] = $p;
+        }
+
+        $suppliers = [];
+        foreach ($bySupplier as $sid => $list) {
+            $prices = [];
+            $prev = null;
+            $all = [];
+            foreach ($list as $r) {
+                $val = (float)$r['price'];
+                $all[] = $val;
+                $prices[] = [
+                    'id' => (int)$r['id'],
+                    'price' => $val,
+                    'effective_date' => $r['effective_date'],
+                    'remarks' => $r['remarks'],
+                    'delta' => $prev === null ? null : round($val - $prev, 2)
+                ];
+                $prev = $val;
+            }
+            $suppliers[] = [
+                'supplier_id' => $sid,
+                'supplier_name' => $list[0]['supplier_name'],
+                'status' => (int)$list[0]['supplier_status'],
+                'count' => count($list),
+                'latest' => $prices[0]['price'],
+                'latest_date' => $prices[0]['effective_date'],
+                'delta' => $prices[0]['delta'],
+                'min' => min($all),
+                'max' => max($all),
+                'prices' => $prices
+            ];
+        }
+
+        echo json_encode([
+            'success' => true,
+            'item' => $item,
+            'active_suppliers' => $this->supplierModel->getAll(true),
+            'suppliers' => $suppliers
+        ]);
+        exit;
+    }
+
+    public function itemPriceAdd() {
+        header('Content-Type: application/json');
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            echo json_encode(['success' => false, 'error' => 'Invalid request.']);
+            exit;
+        }
+        $itemId = (int)($_POST['item_id'] ?? 0);
+        $item = $itemId > 0 ? $this->itemImportModel->getItemById($itemId) : null;
+        if (!$item) {
+            echo json_encode(['success' => false, 'error' => 'Item not found.']);
+            exit;
+        }
+
+        $supplierId = (int)($_POST['supplier_id'] ?? 0);
+        $priceRaw = trim($_POST['price'] ?? '');
+        // Date is optional in the modal (field removed) — stamp today server-side.
+        $date = trim($_POST['effective_date'] ?? '') ?: date('Y-m-d');
+        $remarks = trim($_POST['remarks'] ?? '') ?: null;
+
+        if ($supplierId <= 0 || !$this->supplierModel->getById($supplierId)) {
+            echo json_encode(['success' => false, 'error' => 'Please select a valid supplier.']);
+            exit;
+        }
+        if ($priceRaw === '' || !is_numeric($priceRaw) || (float)$priceRaw < 0) {
+            echo json_encode(['success' => false, 'error' => 'Price must be a number greater than or equal to 0.']);
+            exit;
+        }
+        $dt = \DateTime::createFromFormat('Y-m-d', $date);
+        if (!$dt || $dt->format('Y-m-d') !== $date) {
+            echo json_encode(['success' => false, 'error' => 'Invalid effective date.']);
+            exit;
+        }
+
+        $price = round((float)$priceRaw, 2);
+        $priceId = $this->itemImportModel->addPrice([
+            'item_id' => $itemId,
+            'supplier_id' => $supplierId,
+            'price' => $price,
+            'effective_date' => $date,
+            'remarks' => $remarks,
+            'created_by' => $_SESSION['user_id']
+        ]);
+        $this->itemImportModel->syncItemAmount($itemId);
+
+        AuditModel::log($_SESSION['user_id'], 'CREATE', 'rnd',
+            "Price added for {$item['item_code']}: ₱" . number_format($price, 2) . " @ {$date}",
+            null,
+            ['supplier_id' => $supplierId, 'price' => $price, 'effective_date' => $date, 'remarks' => $remarks],
+            'item_price', $priceId);
+
+        echo json_encode(['success' => true, 'message' => 'Price entry added.']);
+        exit;
+    }
+
+    public function itemPriceDelete() {
+        header('Content-Type: application/json');
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            echo json_encode(['success' => false, 'error' => 'Invalid request.']);
+            exit;
+        }
+        $id = (int)($_POST['id'] ?? 0);
+
+        $affectedItemId = $id > 0 ? $this->itemImportModel->deletePrice($id) : null;
+        if ($affectedItemId === null) {
+            echo json_encode(['success' => false, 'error' => 'Price entry not found.']);
+            exit;
+        }
+        $this->itemImportModel->syncItemAmount($affectedItemId);
+
+        AuditModel::log($_SESSION['user_id'], 'DELETE', 'rnd',
+            'Deleted price entry #' . $id . ' (item #' . $affectedItemId . ')',
+            ['id' => $id, 'item_id' => $affectedItemId], null,
+            'item_price', $id);
+
+        echo json_encode(['success' => true, 'message' => 'Price entry deleted.']);
+        exit;
+    }
+
+    /** Delete Supplier: drop every price row this supplier has for the item. */
+    public function itemSupplierRemove() {
+        header('Content-Type: application/json');
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            echo json_encode(['success' => false, 'error' => 'Invalid request.']);
+            exit;
+        }
+        $itemId = (int)($_POST['item_id'] ?? 0);
+        $supplierId = (int)($_POST['supplier_id'] ?? 0);
+
+        $item = $itemId > 0 ? $this->itemImportModel->getItemById($itemId) : null;
+        $supplier = $supplierId > 0 ? $this->supplierModel->getById($supplierId) : null;
+        if (!$item || !$supplier) {
+            echo json_encode(['success' => false, 'error' => 'Item or supplier not found.']);
+            exit;
+        }
+
+        $affected = $this->itemImportModel->deletePricesForSupplier($itemId, $supplierId);
+        if ($affected === null) {
+            echo json_encode(['success' => false, 'error' => 'No prices found for that supplier.']);
+            exit;
+        }
+        $this->itemImportModel->syncItemAmount($itemId);
+
+        AuditModel::log($_SESSION['user_id'], 'DELETE', 'rnd',
+            "Supplier removed from {$item['item_code']}: " . $supplier['supplier_name'] . ' (all price entries)',
+            ['item_id' => $itemId, 'supplier_id' => $supplierId], null,
+            'item_price', $itemId);
+
+        echo json_encode(['success' => true, 'message' => 'Supplier removed from this item.']);
         exit;
     }
 
@@ -578,6 +866,177 @@ class RndController {
 
     public function itemImportPreview() { $this->itemImportForm(); }
     public function itemImportConfirm() { $this->itemImportForm(); }
+
+    // ─── Suppliers (Supplier Management) ─────────────────────────────────────
+
+    /** Redirect target that keeps the supplier list's search/page. The add/edit
+     *  forms carry these as a query string on their action URL. */
+    private function suppliersBackUrl(string $base): string {
+        $qs = [];
+        foreach (['search', 'page'] as $key) {
+            $val = trim($_GET[$key] ?? '');
+            if ($val !== '' && $val !== '0') {
+                $qs[$key] = $val;
+            }
+        }
+        return $qs ? $base . '&' . http_build_query($qs) : $base;
+    }
+
+    public function suppliers() {
+        $search = $_GET['search'] ?? '';
+        $filters = [];
+        if ($search) $filters['search'] = $search;
+
+        $hasFilters = ($search !== '');
+        if ($hasFilters) {
+            $data['suppliers'] = $this->supplierModel->getAllFiltered($filters);
+            $data['page'] = 1;
+            $data['totalPages'] = 1;
+            $data['total'] = count($data['suppliers']);
+        } else {
+            $all = $this->supplierModel->getAll(false);
+            $pagination = Pagination::paginate($all, 15);
+            $data['suppliers'] = $pagination['items'];
+            $data['page'] = $pagination['page'];
+            $data['totalPages'] = $pagination['totalPages'];
+            $data['total'] = $pagination['total'];
+        }
+        $data['search'] = $search;
+        $data['supController'] = 'rnd';
+        $data['page_title'] = 'Supplier Management';
+        $this->renderAdmin('suppliers/index', $data);
+    }
+
+    public function supplierCreate() {
+        $back = $this->suppliersBackUrl('?controller=rnd&action=suppliers');
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $code = trim($_POST['supplier_code'] ?? '');
+        $name = trim($_POST['supplier_name'] ?? '');
+        $email = trim($_POST['email'] ?? '');
+
+        if ($code === '' || $name === '') {
+            $_SESSION['error'] = 'Supplier code and name are required.';
+            header('Location: ' . $back);
+            exit;
+        }
+        if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $_SESSION['error'] = 'Invalid email address.';
+            header('Location: ' . $back);
+            exit;
+        }
+        if ($this->supplierModel->getByCode($code)) {
+            $_SESSION['error'] = 'Supplier code already exists.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        try {
+            $id = $this->supplierModel->create([
+                'supplier_code' => $code,
+                'supplier_name' => $name,
+                'contact_person' => trim($_POST['contact_person'] ?? '') ?: null,
+                'phone' => trim($_POST['phone'] ?? '') ?: null,
+                'email' => $email ?: null,
+                'address' => trim($_POST['address'] ?? '') ?: null
+            ]);
+            AuditModel::log($_SESSION['user_id'], 'CREATE', 'rnd', 'Created supplier: ' . $name, null, [
+                'supplier_code' => $code,
+                'supplier_name' => $name
+            ], 'supplier', (int)$id);
+            $_SESSION['success'] = 'Supplier created successfully';
+        } catch (\PDOException $e) {
+            $_SESSION['error'] = 'Supplier code already exists.';
+        }
+
+        header('Location: ' . $back);
+        exit;
+    }
+
+    public function supplierUpdate() {
+        $back = $this->suppliersBackUrl('?controller=rnd&action=suppliers');
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $id = (int)($_POST['supplier_id'] ?? 0);
+        $existing = $id > 0 ? $this->supplierModel->getById($id) : null;
+        if (!$existing) {
+            $_SESSION['error'] = 'Supplier not found.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $code = trim($_POST['supplier_code'] ?? '');
+        $name = trim($_POST['supplier_name'] ?? '');
+        $email = trim($_POST['email'] ?? '');
+
+        if ($code === '' || $name === '') {
+            $_SESSION['error'] = 'Supplier code and name are required.';
+            header('Location: ' . $back);
+            exit;
+        }
+        if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $_SESSION['error'] = 'Invalid email address.';
+            header('Location: ' . $back);
+            exit;
+        }
+        $byCode = $this->supplierModel->getByCode($code);
+        if ($byCode && (int)$byCode['supplier_id'] !== $id) {
+            $_SESSION['error'] = 'Supplier code already exists.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        try {
+            $this->supplierModel->update($id, [
+                'supplier_code' => $code,
+                'supplier_name' => $name,
+                'contact_person' => trim($_POST['contact_person'] ?? '') ?: null,
+                'phone' => trim($_POST['phone'] ?? '') ?: null,
+                'email' => $email ?: null,
+                'address' => trim($_POST['address'] ?? '') ?: null
+            ]);
+            AuditModel::log($_SESSION['user_id'], 'UPDATE', 'rnd', 'Updated supplier: ' . $existing['supplier_name'], $existing, [
+                'supplier_code' => $code,
+                'supplier_name' => $name
+            ], 'supplier', $id);
+            $_SESSION['success'] = 'Supplier updated successfully';
+        } catch (\PDOException $e) {
+            $_SESSION['error'] = 'Supplier code already exists.';
+        }
+
+        header('Location: ' . $back);
+        exit;
+    }
+
+    public function supplierToggleStatus() {
+        $back = $this->suppliersBackUrl('?controller=rnd&action=suppliers');
+        $id = (int)($_GET['id'] ?? 0);
+        $supplier = $id > 0 ? $this->supplierModel->getById($id) : null;
+        if (!$supplier) {
+            $_SESSION['error'] = 'Supplier not found.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        try {
+            $this->supplierModel->toggleStatus($id);
+            $newStatus = $supplier['status'] ? 'Inactive' : 'Active';
+            AuditModel::log($_SESSION['user_id'], 'UPDATE', 'rnd', 'Toggled supplier status to ' . $newStatus . ': ' . $supplier['supplier_name'], $supplier, null, 'supplier', $id);
+            $_SESSION['success'] = 'Supplier status changed to ' . $newStatus;
+        } catch (\Exception $e) {
+            error_log('rnd supplierToggleStatus error: ' . $e->getMessage());
+            $_SESSION['error'] = 'Failed to update supplier status.';
+        }
+
+        header('Location: ' . $back);
+        exit;
+    }
 
     // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -594,6 +1053,25 @@ class RndController {
         extract($data);
         ob_start();
         include __DIR__ . "/../views/{$view}.php";
+        $content = ob_get_clean();
+        include __DIR__ . "/../views/layouts/main.php";
+    }
+
+    // Renders a view owned by another module (e.g. the shared Item Master
+    // List) inside the R&D layout.
+    private function renderWarehouse($view, $data = []) {
+        extract($data);
+        ob_start();
+        include BASE_PATH . "warehouse/views/{$view}.php";
+        $content = ob_get_clean();
+        include __DIR__ . "/../views/layouts/main.php";
+    }
+
+    // Same, for views owned by the admin module (e.g. Supplier Management).
+    private function renderAdmin($view, $data = []) {
+        extract($data);
+        ob_start();
+        include BASE_PATH . "admin/views/{$view}.php";
         $content = ob_get_clean();
         include __DIR__ . "/../views/layouts/main.php";
     }

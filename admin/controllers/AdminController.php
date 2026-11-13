@@ -2,6 +2,7 @@
 namespace App\Controllers;
 
 use App\Models\CustomerModel;
+use App\Models\SupplierModel;
 use App\Models\ItemModel;
 use App\Models\CustomerFinishedGoodModel;
 use App\Models\WarehouseModel;
@@ -18,6 +19,7 @@ use App\Helpers\SpreadsheetReader;
 
 class AdminController {
     private $customerModel;
+    private $supplierModel;
     private $itemModel;
     private $cfgModel;
     private $warehouseModel;
@@ -58,6 +60,7 @@ class AdminController {
             exit;
         }
         $this->customerModel = new CustomerModel();
+        $this->supplierModel = new SupplierModel();
         $this->itemModel = new ItemModel();
         $this->cfgModel = new CustomerFinishedGoodModel();
         $this->warehouseModel = new WarehouseModel();
@@ -450,11 +453,181 @@ class AdminController {
         }
         $search = $_POST['filter_search'] ?? '';
         $customerFilter = $_POST['filter_customer_id'] ?? '';
-        $redirect = '?controller=admin&action=items';
+        $redirect = '?controller=admin&action=customers';
         if ($search !== '' || $customerFilter !== '') {
             $redirect .= '&search=' . urlencode($search) . '&customer_id=' . urlencode($customerFilter);
         }
         header('Location: ' . $redirect);
+        exit;
+    }
+
+    // ─── Suppliers (Supplier Management) ─────────────────────────────────────
+
+    /** Redirect target that keeps the supplier list's search/page. The add/edit
+     *  forms carry these as a query string on their action URL. */
+    private function suppliersBackUrl(string $base): string {
+        $qs = [];
+        foreach (['search', 'page'] as $key) {
+            $val = trim($_GET[$key] ?? '');
+            if ($val !== '' && $val !== '0') {
+                $qs[$key] = $val;
+            }
+        }
+        return $qs ? $base . '&' . http_build_query($qs) : $base;
+    }
+
+    public function suppliers() {
+        $search = $_GET['search'] ?? '';
+        $filters = [];
+        if ($search) $filters['search'] = $search;
+
+        $hasFilters = ($search !== '');
+        if ($hasFilters) {
+            $data['suppliers'] = $this->supplierModel->getAllFiltered($filters);
+            $data['page'] = 1;
+            $data['totalPages'] = 1;
+            $data['total'] = count($data['suppliers']);
+        } else {
+            $all = $this->supplierModel->getAll(false);
+            $pagination = Pagination::paginate($all, 15);
+            $data['suppliers'] = $pagination['items'];
+            $data['page'] = $pagination['page'];
+            $data['totalPages'] = $pagination['totalPages'];
+            $data['total'] = $pagination['total'];
+        }
+        $data['search'] = $search;
+        $data['page_title'] = 'Supplier Management';
+        $this->render('suppliers/index', $data);
+    }
+
+    public function supplierCreate() {
+        $back = $this->suppliersBackUrl('?controller=admin&action=suppliers');
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $code = trim($_POST['supplier_code'] ?? '');
+        $name = trim($_POST['supplier_name'] ?? '');
+        $email = trim($_POST['email'] ?? '');
+
+        if ($code === '' || $name === '') {
+            $_SESSION['error'] = 'Supplier code and name are required.';
+            header('Location: ' . $back);
+            exit;
+        }
+        if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $_SESSION['error'] = 'Invalid email address.';
+            header('Location: ' . $back);
+            exit;
+        }
+        if ($this->supplierModel->getByCode($code)) {
+            $_SESSION['error'] = 'Supplier code already exists.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        try {
+            $id = $this->supplierModel->create([
+                'supplier_code' => $code,
+                'supplier_name' => $name,
+                'contact_person' => trim($_POST['contact_person'] ?? '') ?: null,
+                'phone' => trim($_POST['phone'] ?? '') ?: null,
+                'email' => $email ?: null,
+                'address' => trim($_POST['address'] ?? '') ?: null
+            ]);
+            AuditModel::log($_SESSION['user_id'], 'CREATE', 'admin', 'Created supplier: ' . $name, null, [
+                'supplier_code' => $code,
+                'supplier_name' => $name
+            ], 'supplier', (int)$id);
+            $_SESSION['success'] = 'Supplier created successfully';
+        } catch (\PDOException $e) {
+            $_SESSION['error'] = $this->getDbErrorMessage($e, 'supplier_code', 'Supplier code');
+        }
+
+        header('Location: ' . $back);
+        exit;
+    }
+
+    public function supplierUpdate() {
+        $back = $this->suppliersBackUrl('?controller=admin&action=suppliers');
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $id = (int)($_POST['supplier_id'] ?? 0);
+        $existing = $id > 0 ? $this->supplierModel->getById($id) : null;
+        if (!$existing) {
+            $_SESSION['error'] = 'Supplier not found.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $code = trim($_POST['supplier_code'] ?? '');
+        $name = trim($_POST['supplier_name'] ?? '');
+        $email = trim($_POST['email'] ?? '');
+
+        if ($code === '' || $name === '') {
+            $_SESSION['error'] = 'Supplier code and name are required.';
+            header('Location: ' . $back);
+            exit;
+        }
+        if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $_SESSION['error'] = 'Invalid email address.';
+            header('Location: ' . $back);
+            exit;
+        }
+        $byCode = $this->supplierModel->getByCode($code);
+        if ($byCode && (int)$byCode['supplier_id'] !== $id) {
+            $_SESSION['error'] = 'Supplier code already exists.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        try {
+            $this->supplierModel->update($id, [
+                'supplier_code' => $code,
+                'supplier_name' => $name,
+                'contact_person' => trim($_POST['contact_person'] ?? '') ?: null,
+                'phone' => trim($_POST['phone'] ?? '') ?: null,
+                'email' => $email ?: null,
+                'address' => trim($_POST['address'] ?? '') ?: null
+            ]);
+            AuditModel::log($_SESSION['user_id'], 'UPDATE', 'admin', 'Updated supplier: ' . $existing['supplier_name'], $existing, [
+                'supplier_code' => $code,
+                'supplier_name' => $name
+            ], 'supplier', $id);
+            $_SESSION['success'] = 'Supplier updated successfully';
+        } catch (\PDOException $e) {
+            $_SESSION['error'] = $this->getDbErrorMessage($e, 'supplier_code', 'Supplier code');
+        }
+
+        header('Location: ' . $back);
+        exit;
+    }
+
+    public function supplierToggleStatus() {
+        $back = $this->suppliersBackUrl('?controller=admin&action=suppliers');
+        $id = (int)($_GET['id'] ?? 0);
+        $supplier = $id > 0 ? $this->supplierModel->getById($id) : null;
+        if (!$supplier) {
+            $_SESSION['error'] = 'Supplier not found.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        try {
+            $this->supplierModel->toggleStatus($id);
+            $newStatus = $supplier['status'] ? 'Inactive' : 'Active';
+            AuditModel::log($_SESSION['user_id'], 'UPDATE', 'admin', 'Toggled supplier status to ' . $newStatus . ': ' . $supplier['supplier_name'], $supplier, null, 'supplier', $id);
+            $_SESSION['success'] = 'Supplier status changed to ' . $newStatus;
+        } catch (\Exception $e) {
+            error_log('supplierToggleStatus error: ' . $e->getMessage());
+            $_SESSION['error'] = 'Failed to update supplier status.';
+        }
+
+        header('Location: ' . $back);
         exit;
     }
 

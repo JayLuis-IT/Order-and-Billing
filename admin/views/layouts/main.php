@@ -192,6 +192,11 @@
 </a>
 </li>
 <li class="nav-item">
+<a class="nav-link <?= in_array($currentAction, ['suppliers', 'supplierCreate', 'supplierUpdate', 'supplierToggleStatus']) ? 'active' : '' ?>" href="?controller=admin&action=suppliers">
+<i class="bi bi-truck me-2"></i>Suppliers
+</a>
+</li>
+<li class="nav-item">
 <a class="nav-link <?= ($_GET['controller'] ?? 'admin') === 'admin' && in_array($currentAction, ['items', 'itemCreate', 'itemEdit', 'itemDelete', 'itemToggleStatus', 'itemUpdate']) ? 'active' : '' ?>" href="?controller=admin&action=items">
 <i class="bi bi-box-seam me-2"></i>Items
 </a>

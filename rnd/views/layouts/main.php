@@ -134,6 +134,16 @@
 <i class="bi bi-file-earmark-text me-2"></i>Purchase Request
 </a>
 </li>
+<li class="nav-item">
+<a class="nav-link <?= $currentAction === 'items' ? 'active' : '' ?>" href="?controller=rnd&action=items">
+<i class="bi bi-box-seam me-2"></i>Item Master List
+</a>
+</li>
+<li class="nav-item">
+<a class="nav-link <?= in_array($currentAction, ['suppliers', 'supplierCreate', 'supplierUpdate', 'supplierToggleStatus']) ? 'active' : '' ?>" href="?controller=rnd&action=suppliers">
+<i class="bi bi-truck me-2"></i>Suppliers
+</a>
+</li>
 </ul>
             <div class="mt-auto p-3 border-top" style="border-color: rgba(255,255,255,0.08) !important">
                     <a href="?controller=auth&action=logout" class="nav-link text-center" style="color: #64748b; font-size: 0.875rem; transition: all 0.2s;" onmouseover="this.style.color='#ef4444'" onmouseout="this.style.color='#64748b'">

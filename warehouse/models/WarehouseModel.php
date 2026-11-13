@@ -565,20 +565,21 @@ class WarehouseModel extends BaseModel {
 
     /**
      * Supplier options behind the Purchasing PO modals' supplier dropdown.
-     * TEMPORARY static list: when the suppliers table ships, replace the body
-     * with e.g. SELECT supplier_id AS id, supplier_name AS name
-     *          FROM suppliers WHERE `remove` = 0 ORDER BY supplier_name
-     * and nothing else changes â€” both the purchasingPo view (server-rendered
-     * options) and WarehouseController::getSuppliers() (JSON hook) read this.
+     * Reads the suppliers master (Supplier Management page in System Admin /
+     * R&D) — only active, non-deleted rows, so deactivating a supplier
+     * removes it from the dropdown without touching old POs (their
+     * supplier_name is stored denormalized). Both the purchasingPo view
+     * (server-rendered options) and WarehouseController::getSuppliers()
+     * (JSON hook) read this; shape stays {id, name}.
      */
     public function getSuppliers() {
-        return [
-            ['id' => 1, 'name' => 'Supplier 1'],
-            ['id' => 2, 'name' => 'Supplier 2'],
-            ['id' => 3, 'name' => 'Supplier 3'],
-            ['id' => 4, 'name' => 'Supplier 4'],
-            ['id' => 5, 'name' => 'Supplier 5'],
-        ];
+        $sql = "SELECT supplier_id AS id, supplier_name AS name
+                FROM suppliers
+                WHERE `remove` = 0 AND status = 1
+                ORDER BY supplier_name ASC";
+        $stmt = self::getConnection()->prepare($sql);
+        $stmt->execute();
+        return $stmt->fetchAll();
     }
 
     public function updateProducedQuantity($po_id, $added_quantity, $user_id) {
