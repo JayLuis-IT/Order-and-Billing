@@ -222,6 +222,8 @@ class RoleHelper
         $all = [
             ['label' => 'Dashboard', 'href' => '?controller=warehouse', 'icon' => 'bi-speedometer2',
              'activeActions' => ['']],
+            ['label' => 'Purchase Request', 'href' => '?controller=pr', 'icon' => 'bi-file-earmark-text',
+             'activeActions' => ['index']],
             ['label' => 'Customer PO', 'href' => '?controller=warehouse&action=purchaseOrders', 'icon' => 'bi-cart3',
              'activeActions' => ['purchaseOrders', 'createPO', 'editPO', 'viewPO']],
             ['label' => 'Deliveries', 'href' => '?controller=warehouse&action=deliveries', 'icon' => 'bi-truck',
@@ -230,6 +232,8 @@ class RoleHelper
              'activeActions' => ['items', 'itemImportForm', 'itemImportPreview', 'itemImportConfirm']],
             ['label' => 'Purchasing PO', 'href' => '?controller=warehouse&action=purchasingPo', 'icon' => 'bi-cart3',
              'activeActions' => ['purchasingPo', 'createPurchasingPo']],
+            ['label' => 'Purchase Requests', 'href' => '?controller=pr&action=procurement', 'icon' => 'bi-file-earmark-text',
+             'activeActions' => ['procurement']],
             ['label' => 'MRP Approval', 'href' => '?controller=warehouse&action=mrpApproval', 'icon' => 'bi-shield-check',
              'activeActions' => ['mrpApproval'], 'badge' => 'mrpApproval'],
             ['label' => 'Receiving Purchasing PO', 'href' => '?controller=warehouse&action=receivingPo', 'icon' => 'bi-box-arrow-in-down',
@@ -260,20 +264,20 @@ class RoleHelper
     {
         switch ($role) {
             case 'whse_admin':
-                return ['Dashboard', 'Customer PO', 'Deliveries', 'Item Master List', 'Purchasing PO',
-                    'MRP Approval', 'Receiving Purchasing PO', 'Stock In/Out', 'LMR Entry', 'MRP Sheet',
-                    'Activity Logs', 'Reports'];
+                return ['Dashboard', 'Purchase Request', 'Customer PO', 'Deliveries', 'Item Master List',
+                    'Purchasing PO', 'Purchase Requests', 'MRP Approval', 'Receiving Purchasing PO',
+                    'Stock In/Out', 'LMR Entry', 'MRP Sheet', 'Activity Logs', 'Reports'];
             case 'whse_officer':
-                return ['Dashboard', 'Deliveries', 'Receiving Purchasing PO', 'Item Master List',
-                    'Activity Logs', 'Reports'];
+                return ['Dashboard', 'Purchase Request', 'Deliveries', 'Receiving Purchasing PO',
+                    'Item Master List', 'Activity Logs', 'Reports'];
             case 'whse_ppic':
-                return ['Dashboard', 'Customer PO', 'LMR Entry', 'MRP Sheet', 'Activity Logs'];
+                return ['Dashboard', 'Purchase Request', 'Customer PO', 'LMR Entry', 'MRP Sheet', 'Activity Logs'];
             case 'whse_procurement':
-                return ['Dashboard', 'Purchasing PO', 'Item Master List'];
+                return ['Dashboard', 'Purchase Request', 'Purchasing PO', 'Purchase Requests', 'Item Master List'];
             case 'whse_receiving':
-                return ['Dashboard', 'Stock In/Out', 'Item Master List'];
+                return ['Dashboard', 'Purchase Request', 'Stock In/Out', 'Item Master List'];
             default:
-                return ['Dashboard'];
+                return ['Dashboard', 'Purchase Request'];
         }
     }
 

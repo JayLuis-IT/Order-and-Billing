@@ -87,6 +87,11 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a class="nav-link <?= (($_GET['controller'] ?? '') === 'pr') ? 'active' : '' ?>" href="?controller=pr">
+                            <i class="bi bi-file-earmark-text me-2"></i>Purchase Request
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link <?= strpos($page_title ?? '', 'FG Inventory') !== false ? 'active' : '' ?>" href="?controller=production&action=fgInventory">
                             <i class="bi bi-box-seam me-2"></i>FG Inventory
                         </a>

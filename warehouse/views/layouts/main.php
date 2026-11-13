@@ -98,10 +98,20 @@
                     <?php foreach ($sideMenu as $menuItem): ?>
                         <?php
                         $isLmrItem = ($menuItem['label'] ?? '') === 'LMR Entry';
-                        $isActive = $isLmrItem
-                            ? (($_GET['controller'] ?? '') === 'lmr' && ($_GET['action'] ?? 'index') !== 'logout')
-                            : (isset($_GET['controller']) && $_GET['controller'] === 'warehouse'
+                        $isPrItem = ($menuItem['label'] ?? '') === 'Purchase Requests';
+                        $isPrReqItem = ($menuItem['label'] ?? '') === 'Purchase Request';
+                        $controller = $_GET['controller'] ?? '';
+                        $prAction = $_GET['action'] ?? '';
+                        if ($isLmrItem) {
+                            $isActive = ($controller === 'lmr' && ($_GET['action'] ?? 'index') !== 'logout');
+                        } elseif ($isPrItem) {
+                            $isActive = ($controller === 'pr' && $prAction === 'procurement');
+                        } elseif ($isPrReqItem) {
+                            $isActive = ($controller === 'pr' && $prAction !== 'procurement');
+                        } else {
+                            $isActive = ($controller === 'warehouse'
                                 && in_array($currentAction, $menuItem['activeActions'] ?? [], true));
+                        }
                         ?>
                         <?php if (!empty($menuItem['collapse'])): ?>
                         <li class="nav-item">

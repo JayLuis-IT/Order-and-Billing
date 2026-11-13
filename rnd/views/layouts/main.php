@@ -129,6 +129,11 @@
 <i class="bi bi-diagram-3 me-2"></i>BOM Components
 </a>
 </li>
+<li class="nav-item">
+<a class="nav-link <?= (($_GET['controller'] ?? '') === 'pr') ? 'active' : '' ?>" href="?controller=pr">
+<i class="bi bi-file-earmark-text me-2"></i>Purchase Request
+</a>
+</li>
 </ul>
             <div class="mt-auto p-3 border-top" style="border-color: rgba(255,255,255,0.08) !important">
                     <a href="?controller=auth&action=logout" class="nav-link text-center" style="color: #64748b; font-size: 0.875rem; transition: all 0.2s;" onmouseover="this.style.color='#ef4444'" onmouseout="this.style.color='#64748b'">

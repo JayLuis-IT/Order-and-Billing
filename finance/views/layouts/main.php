@@ -94,6 +94,11 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a class="nav-link <?= (($_GET['controller'] ?? '') === 'pr') ? 'active' : '' ?>" href="?controller=pr">
+                            <i class="bi bi-file-earmark-text me-2"></i>Purchase Request
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link <?= in_array($currentAction, ['deliveries', 'viewDelivery']) ? 'active' : '' ?>" href="?controller=finance&action=deliveries">
                             <i class="bi bi-receipt me-2"></i>Sales Invoice
                             <?php if ($pendingSIcount > 0): ?>

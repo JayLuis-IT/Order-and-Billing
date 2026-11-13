@@ -86,6 +86,11 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a class="nav-link <?= (($_GET['controller'] ?? '') === 'pr') ? 'active' : '' ?>" href="?controller=pr">
+                            <i class="bi bi-file-earmark-text me-2"></i>Purchase Request
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link <?= $page_title == 'Deliveries' ? 'active' : '' ?>" href="?controller=qa&action=delivered">
                             <i class="bi bi-truck me-2"></i>Deliveries
                         </a>

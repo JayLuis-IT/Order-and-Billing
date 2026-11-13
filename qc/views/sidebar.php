@@ -20,6 +20,11 @@ $isActiveItem = function (array $item) use ($currentQcAction) {
         </a>
     </li>
     <?php endforeach; ?>
+    <li class="nav-item">
+        <a class="nav-link <?= (($_GET['controller'] ?? '') === 'pr') ? 'active' : '' ?>" href="?controller=pr">
+            <i class="bi bi-file-earmark-text me-2"></i>Purchase Request
+        </a>
+    </li>
     <li class="nav-item mt-auto">
         <a class="nav-link" href="?controller=auth&action=logout" style="color: #64748b; transition: all 0.2s;" onmouseover="this.style.color='#ef4444'" onmouseout="this.style.color='#64748b'">
             <i class="bi bi-box-arrow-left me-2"></i>Logout

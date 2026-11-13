@@ -161,6 +161,11 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a class="nav-link <?= (($_GET['controller'] ?? '') === 'pr') ? 'active' : '' ?>" href="?controller=pr">
+                            <i class="bi bi-file-earmark-text me-2"></i>Purchase Request
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link <?= in_array($currentAction, ['approvals', 'approvePoDraft', 'rejectPoDraft', 'approveOverageRequest', 'rejectOverageRequest', 'approveMrpRunDraft', 'rejectMrpRunDraft']) ? 'active' : '' ?>" href="?controller=admin&action=approvals">
                             <i class="bi bi-shield-check me-2"></i>Approvals
                             <?php if (!empty($approvalsCount)): ?>
