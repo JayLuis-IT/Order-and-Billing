@@ -112,6 +112,11 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a class="nav-link <?= in_array($currentAction, ['glAccounts', 'glAccountCreate', 'glAccountUpdate', 'glAccountToggleStatus', 'glAccountImportForm', 'glAccountImportPreview', 'glAccountImportConfirm', 'glAccountImportTemplate']) ? 'active' : '' ?>" href="?controller=finance&action=glAccounts">
+                            <i class="bi bi-journal-text me-2"></i>GL Account
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link <?= ($currentAction ?? '') === 'activityLogs' ? 'active' : '' ?>" href="?controller=finance&action=activityLogs">
                             <i class="bi bi-clock-history me-2"></i>Activity Logs
                         </a>

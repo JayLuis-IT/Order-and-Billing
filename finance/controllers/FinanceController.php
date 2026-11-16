@@ -3,14 +3,17 @@ namespace App\Controllers;
 
 use App\Models\FinanceModel;
 use App\Models\PriceListModel;
+use App\Models\GlAccountModel;
 use App\Models\AuditModel;
 use App\Helpers\Pagination;
 use App\Helpers\CsvExport;
+use App\Helpers\SpreadsheetReader;
 use App\Helpers\NotificationHelper;
 
 class FinanceController {
     private $financeModel;
     private $priceListModel;
+    private $glAccountModel;
     public function __construct() {
         if (!isset($_SESSION['user_id'])) {
             header('Location: ?controller=auth&action=login');
@@ -24,6 +27,7 @@ class FinanceController {
         }
         $this->financeModel = new FinanceModel();
         $this->priceListModel = new PriceListModel();
+        $this->glAccountModel = new GlAccountModel();
     }
 
     public function index() {
@@ -478,6 +482,342 @@ class FinanceController {
             $_SESSION['error'] = 'Failed to update status';
         }
         header('Location: ?controller=finance&action=priceList');
+        exit;
+    }
+
+    // ─── GL Account master ───────────────────────────────────────────────────
+
+    /** Redirect target that keeps the GL Account list's search/page. */
+    private function glAccountsBackUrl(): string {
+        $base = '?controller=finance&action=glAccounts';
+        $qs = [];
+        foreach (['search', 'page'] as $key) {
+            $val = trim($_GET[$key] ?? '');
+            if ($val !== '' && $val !== '0') {
+                $qs[$key] = $val;
+            }
+        }
+        return $qs ? $base . '&' . http_build_query($qs) : $base;
+    }
+
+    public function glAccounts() {
+        $search = $_GET['search'] ?? '';
+        $filters = [];
+        if ($search) $filters['search'] = $search;
+
+        $hasFilters = ($search !== '');
+        if ($hasFilters) {
+            $data['gl_accounts'] = $this->glAccountModel->getAllFiltered($filters);
+            $data['page'] = 1;
+            $data['totalPages'] = 1;
+            $data['total'] = count($data['gl_accounts']);
+        } else {
+            $all = $this->glAccountModel->getAll(false);
+            $pagination = Pagination::paginate($all, 15);
+            $data['gl_accounts'] = $pagination['items'];
+            $data['page'] = $pagination['page'];
+            $data['totalPages'] = $pagination['totalPages'];
+            $data['total'] = $pagination['total'];
+        }
+        $data['search'] = $search;
+        $data['page_title'] = 'GL Account';
+        $this->render('gl_accounts/index', $data);
+    }
+
+    public function glAccountCreate() {
+        $back = $this->glAccountsBackUrl();
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $code = trim($_POST['gl_account_code'] ?? '');
+        $description = trim($_POST['gl_account_description'] ?? '');
+        $reportIncluded = trim($_POST['report_included'] ?? '') ?: null;
+        $grouping = trim($_POST['grouping_financial_report'] ?? '') ?: null;
+
+        if ($code === '' || $description === '') {
+            $_SESSION['error'] = 'GL Account Code and Description are required.';
+            header('Location: ' . $back);
+            exit;
+        }
+        if ($this->glAccountModel->getByCode($code)) {
+            $_SESSION['error'] = 'GL Account Code already exists.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        try {
+            $id = $this->glAccountModel->create([
+                'gl_account_code'           => $code,
+                'gl_account_description'    => $description,
+                'report_included'           => $reportIncluded,
+                'grouping_financial_report' => $grouping
+            ]);
+            AuditModel::log($_SESSION['user_id'], 'CREATE', 'finance', 'Created GL Account ' . $code . ' — ' . $description, null, [
+                'gl_account_code' => $code,
+                'gl_account_description' => $description,
+                'report_included' => $reportIncluded,
+                'grouping_financial_report' => $grouping
+            ], 'gl_account', $id);
+            $_SESSION['success'] = 'GL Account ' . $code . ' created successfully.';
+        } catch (\PDOException $e) {
+            error_log('glAccountCreate error: ' . $e->getMessage());
+            $_SESSION['error'] = 'GL Account Code already exists.';
+        }
+
+        header('Location: ' . $back);
+        exit;
+    }
+
+    public function glAccountUpdate() {
+        $back = $this->glAccountsBackUrl();
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $id = (int)($_POST['gl_account_id'] ?? 0);
+        $existing = $id > 0 ? $this->glAccountModel->getById($id) : null;
+        if (!$existing) {
+            $_SESSION['error'] = 'GL Account not found.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $code = trim($_POST['gl_account_code'] ?? '');
+        $description = trim($_POST['gl_account_description'] ?? '');
+        $reportIncluded = trim($_POST['report_included'] ?? '') ?: null;
+        $grouping = trim($_POST['grouping_financial_report'] ?? '') ?: null;
+
+        if ($code === '' || $description === '') {
+            $_SESSION['error'] = 'GL Account Code and Description are required.';
+            header('Location: ' . $back);
+            exit;
+        }
+        $byCode = $this->glAccountModel->getByCode($code);
+        if ($byCode && (int)$byCode['gl_account_id'] !== $id) {
+            $_SESSION['error'] = 'GL Account Code already exists.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        try {
+            $this->glAccountModel->update($id, [
+                'gl_account_code'           => $code,
+                'gl_account_description'    => $description,
+                'report_included'           => $reportIncluded,
+                'grouping_financial_report' => $grouping
+            ]);
+            AuditModel::log($_SESSION['user_id'], 'UPDATE', 'finance', 'Updated GL Account ' . $code, $existing, [
+                'gl_account_code' => $code,
+                'gl_account_description' => $description,
+                'report_included' => $reportIncluded,
+                'grouping_financial_report' => $grouping
+            ], 'gl_account', $id);
+            $_SESSION['success'] = 'GL Account ' . $code . ' updated successfully.';
+        } catch (\PDOException $e) {
+            error_log('glAccountUpdate error: ' . $e->getMessage());
+            $_SESSION['error'] = 'Failed to update GL Account.';
+        }
+
+        header('Location: ' . $back);
+        exit;
+    }
+
+    public function glAccountToggleStatus() {
+        $back = $this->glAccountsBackUrl();
+        $id = (int)($_GET['id'] ?? 0);
+        $account = $id > 0 ? $this->glAccountModel->getById($id) : null;
+        if (!$account) {
+            $_SESSION['error'] = 'GL Account not found.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        try {
+            $this->glAccountModel->toggleStatus($id);
+            $newStatus = $account['status'] ? 'Inactive' : 'Active';
+            AuditModel::log($_SESSION['user_id'], 'UPDATE', 'finance', 'Toggled GL Account ' . $account['gl_account_code'] . ' status to ' . $newStatus, $account, null, 'gl_account', $id);
+            $_SESSION['success'] = 'GL Account ' . $account['gl_account_code'] . ' is now ' . $newStatus . '.';
+        } catch (\Exception $e) {
+            error_log('glAccountToggleStatus error: ' . $e->getMessage());
+            $_SESSION['error'] = 'Failed to update GL Account status.';
+        }
+
+        header('Location: ' . $back);
+        exit;
+    }
+
+    // ─── GL Account bulk import (CSV / XLSX) ─────────────────────────────────
+
+    public function glAccountImportForm() {
+        $data['page_title'] = 'Import GL Accounts';
+        $this->render('gl_accounts/import_form', $data);
+    }
+
+    /** CSV template: 4 headers + sample rows from the reference sheet. */
+    public function glAccountImportTemplate() {
+        CsvExport::export('gl_account_template.csv',
+            ['GL Account Code', 'GL Account Description', 'Report Included', 'Grouping in Financial Report'],
+            [
+                ['101101000000', 'CIB - BPI Collections 5774', 'Balance Sheet', 'Cash and Banks'],
+                ['101102000000', 'CIB - BPI Disbursement 6638', 'Balance Sheet', 'Cash and Banks'],
+            ]);
+    }
+
+    public function glAccountImportPreview() {
+        $back = '?controller=finance&action=glAccountImportForm';
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST' || empty($_FILES['import_file'])) {
+            $_SESSION['error'] = 'No file uploaded.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $file = $_FILES['import_file'];
+        $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+        if (!in_array($ext, ['csv', 'xlsx'])) {
+            $_SESSION['error'] = 'Only .csv and .xlsx files are supported.';
+            header('Location: ' . $back);
+            exit;
+        }
+        if ($file['size'] > 10 * 1024 * 1024) {
+            $_SESSION['error'] = 'File size must be less than 10MB.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        try {
+            $tempPath = sys_get_temp_dir() . '/' . uniqid('gl_') . '.' . $ext;
+            move_uploaded_file($file['tmp_name'], $tempPath);
+            $rows = SpreadsheetReader::read($tempPath);
+            unlink($tempPath);
+        } catch (\Exception $e) {
+            if (isset($tempPath) && file_exists($tempPath)) unlink($tempPath);
+            $_SESSION['error'] = 'Failed to read file: ' . $e->getMessage();
+            header('Location: ' . $back);
+            exit;
+        }
+
+        if (empty($rows)) {
+            $_SESSION['error'] = 'No data rows found. Row 1 must contain the column headers.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        // Header matching is normalized: case/spaces/underscores ignored.
+        $norm = function ($h) {
+            return strtolower(str_replace([' ', '_', '-'], '', (string) $h));
+        };
+
+        $preview = [];
+        $seenCodes = [];
+        foreach ($rows as $idx => $row) {
+            $rowNum = $idx + 2;
+            $nrow = [];
+            foreach ($row as $k => $v) {
+                $nrow[$norm($k)] = $v;
+            }
+
+            $code = trim((string) ($nrow['glaccountcode'] ?? $nrow['code'] ?? ''));
+            $description = trim((string) ($nrow['glaccountdescription'] ?? $nrow['description'] ?? ''));
+            $report = trim((string) ($nrow['reportincluded'] ?? $nrow['report'] ?? ''));
+            $grouping = trim((string) ($nrow['groupinginfinancialreport'] ?? $nrow['grouping'] ?? ''));
+
+            $errors = [];
+            if ($code === '') {
+                $errors[] = 'GL Account Code is required';
+            } elseif (strlen($code) > 30) {
+                $errors[] = 'Code exceeds 30 characters';
+            }
+            if ($description === '') {
+                $errors[] = 'GL Account Description is required';
+            }
+            if ($code !== '') {
+                $key = strtolower($code);
+                if (isset($seenCodes[$key])) {
+                    $errors[] = 'Duplicate code in file (first seen on row ' . $seenCodes[$key] . ')';
+                } else {
+                    $seenCodes[$key] = $rowNum;
+                }
+            }
+
+            $status = 'new';
+            if (!$errors && $this->glAccountModel->getByCode($code)) {
+                $status = 'skipped';
+            }
+
+            $preview[] = [
+                'row'                     => $rowNum,
+                'code'                    => $code,
+                'description'             => $description,
+                'report_included'         => $report,
+                'grouping_financial_report'=> $grouping,
+                'status'                  => $status,
+                'errors'                  => $errors,
+            ];
+        }
+
+        $_SESSION['gl_import_preview'] = $preview;
+        $data['preview'] = $preview;
+        $data['newCount'] = count(array_filter($preview, fn($r) => $r['status'] === 'new' && empty($r['errors'])));
+        $data['skippedCount'] = count(array_filter($preview, fn($r) => $r['status'] === 'skipped' && empty($r['errors'])));
+        $data['errorCount'] = count(array_filter($preview, fn($r) => !empty($r['errors'])));
+        $data['page_title'] = 'Import GL Accounts - Preview';
+        $this->render('gl_accounts/import_preview', $data);
+    }
+
+    public function glAccountImportConfirm() {
+        $backForm = '?controller=finance&action=glAccountImportForm';
+        $preview = $_SESSION['gl_import_preview'] ?? null;
+        if (!$preview) {
+            $_SESSION['error'] = 'No import data found. Please upload again.';
+            header('Location: ' . $backForm);
+            exit;
+        }
+        unset($_SESSION['gl_import_preview']);
+
+        $errorCount = count(array_filter($preview, fn($r) => !empty($r['errors'])));
+        if ($errorCount > 0) {
+            $_SESSION['error'] = 'Fix the validation errors and upload the file again.';
+            header('Location: ' . $backForm);
+            exit;
+        }
+
+        $conn = \App\Core\BaseModel::getConnection();
+        $conn->beginTransaction();
+        $created = 0;
+        $skipped = 0;
+        try {
+            foreach ($preview as $row) {
+                if ($row['status'] === 'skipped') {
+                    $skipped++;
+                    continue;
+                }
+                $this->glAccountModel->create([
+                    'gl_account_code'           => $row['code'],
+                    'gl_account_description'    => $row['description'],
+                    'report_included'           => $row['report_included'] !== '' ? $row['report_included'] : null,
+                    'grouping_financial_report' => $row['grouping_financial_report'] !== '' ? $row['grouping_financial_report'] : null,
+                ]);
+                $created++;
+            }
+            $conn->commit();
+        } catch (\Throwable $e) {
+            $conn->rollBack();
+            error_log('glAccountImportConfirm error: ' . $e->getMessage());
+            $_SESSION['error'] = 'Import failed: ' . $e->getMessage();
+            header('Location: ' . $backForm);
+            exit;
+        }
+
+        AuditModel::log($_SESSION['user_id'], 'IMPORT', 'finance',
+            "Imported GL Accounts: {$created} created, {$skipped} skipped",
+            null,
+            ['created' => $created, 'skipped' => $skipped],
+            'gl_account', null);
+        $_SESSION['success'] = "GL Account import complete: {$created} created, {$skipped} skipped (existing codes were left unchanged).";
+        header('Location: ?controller=finance&action=glAccounts');
         exit;
     }
 

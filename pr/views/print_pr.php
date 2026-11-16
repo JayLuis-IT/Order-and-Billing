@@ -116,7 +116,7 @@ $fmt = function ($v) { return htmlspecialchars((string) ($v ?? '')); };
                     </div>
                     <div class="meta-box">
                         <div class="line"><span class="k">Date</span><span class="sep">:</span><span class="v"><?= $fmt(date('F d, Y', strtotime($pr['pr_date']))) ?></span></div>
-                        <div class="line"><span class="k">Department</span><span class="sep">:</span><span class="v"><?= $fmt($pr['department']) ?></span></div>
+                        <div class="line"><span class="k">Department</span><span class="sep">:</span><span class="v"><?= $fmt(deptLabel($pr['department'])) ?></span></div>
                         <div class="line"><span class="k">Requisitioner</span><span class="sep">:</span><span class="v"><?= $fmt($pr['requisitioner']) ?></span></div>
                     </div>
                 </div>
@@ -130,19 +130,21 @@ $fmt = function ($v) { return htmlspecialchars((string) ($v ?? '')); };
         <table class="items">
             <thead>
                 <tr>
-                    <th style="width:135px">Item Number</th>
                     <th>Description</th>
-                    <th style="width:100px">Account Charged</th>
-                    <th style="width:55px">Unit</th>
-                    <th style="width:70px">Quantity</th>
-                    <th style="width:80px">Date Req'd</th>
+                    <th style="width:125px">Item Number</th>
+                    <th style="width:100px">Account Description</th>
+                    <th style="width:85px">Account Charged</th>
+                    <th style="width:50px">Unit</th>
+                    <th style="width:65px">Quantity</th>
+                    <th style="width:75px">Date Req'd</th>
                 </tr>
             </thead>
             <tbody>
                 <?php $rows = max(8, count($items)); for ($i = 0; $i < $rows; $i++): $it = $items[$i] ?? null; ?>
                 <tr<?= $it ? '' : ' class="filler"' ?>>
-                    <td class="num"><?= $it ? $fmt($it['item_number']) : '' ?></td>
                     <td><?= $it ? $fmt($it['description']) : '' ?></td>
+                    <td class="num"><?= $it ? $fmt($it['item_number']) : '' ?></td>
+                    <td class="c"><?= $it ? $fmt($it['account_description']) : '' ?></td>
                     <td class="c"><?= $it ? $fmt($it['account_charged']) : '' ?></td>
                     <td class="c"><?= $it ? $fmt($it['unit']) : '' ?></td>
                     <td class="r"><?= $it && $it['qty'] !== null ? $fmt(number_format((float) $it['qty'], 3)) : '' ?></td>
@@ -150,7 +152,7 @@ $fmt = function ($v) { return htmlspecialchars((string) ($v ?? '')); };
                 </tr>
                 <?php endfor; ?>
                 <tr>
-                    <td class="nf-row" colspan="6">*** Nothing follows for Ship-to <?= $fmt($shipTo['name']) ?> ***</td>
+                    <td class="nf-row" colspan="7">*** Nothing follows for Ship-to <?= $fmt($shipTo['name']) ?> ***</td>
                 </tr>
             </tbody>
         </table>

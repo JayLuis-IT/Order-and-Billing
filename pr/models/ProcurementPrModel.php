@@ -122,9 +122,9 @@ class ProcurementPrModel extends BaseModel
 
             $itemStmt = $pdo->prepare(
                 "INSERT INTO procurement_pr_items
-                    (pr_id, line_no, item_number, description, account_charged, unit, qty, date_required)
+                    (pr_id, line_no, item_number, description, account_charged, account_description, unit, qty, date_required)
                  VALUES
-                    (:pr_id, :line_no, :item_number, :description, :account_charged, :unit, :qty, :date_required)"
+                    (:pr_id, :line_no, :item_number, :description, :account_charged, :account_description, :unit, :qty, :date_required)"
             );
             $line = 0;
             $uncoded = 0;
@@ -144,14 +144,15 @@ class ProcurementPrModel extends BaseModel
                     $itemNumber = $header['pr_number'] . '-' . $uncoded;
                 }
                 $itemStmt->execute([
-                    'pr_id'           => $prId,
-                    'line_no'         => $line,
-                    'item_number'     => $itemNumber,
-                    'description'     => trim((string) $item['description']),
-                    'account_charged' => trim((string) ($item['account_charged'] ?? '')) ?: null,
-                    'unit'            => trim((string) ($item['unit'] ?? '')) ?: null,
-                    'qty'             => (float) ($item['qty'] ?? 0),
-                    'date_required'   => ($item['date_required'] ?? '') !== '' ? $item['date_required'] : null,
+                    'pr_id'              => $prId,
+                    'line_no'            => $line,
+                    'item_number'        => $itemNumber,
+                    'description'        => trim((string) $item['description']),
+                    'account_charged'    => trim((string) ($item['account_charged'] ?? '')) ?: null,
+                    'account_description'=> trim((string) ($item['account_description'] ?? '')) ?: null,
+                    'unit'               => trim((string) ($item['unit'] ?? '')) ?: null,
+                    'qty'                => (float) ($item['qty'] ?? 0),
+                    'date_required'      => ($item['date_required'] ?? '') !== '' ? $item['date_required'] : null,
                 ]);
             }
             $pdo->commit();

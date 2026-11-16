@@ -3,6 +3,10 @@
         <a class="btn btn-outline-secondary btn-sm <?= $statusFilter === '' ? 'active' : '' ?>" href="?controller=pr">All</a>
         <a class="btn btn-outline-secondary btn-sm <?= $statusFilter === 'submitted' ? 'active' : '' ?>" href="?controller=pr&status=submitted">Submitted</a>
         <a class="btn btn-outline-secondary btn-sm <?= $statusFilter === 'approved' ? 'active' : '' ?>" href="?controller=pr&status=approved">Approved</a>
+        <a class="btn btn-outline-secondary btn-sm <?= $statusFilter === 'in_process' ? 'active' : '' ?>" href="?controller=pr&status=in_process">In Process</a>
+        <?php if (!($seeAll ?? false)): ?>
+        <span class="text-muted small align-self-center ms-1"><i class="bi bi-info-circle me-1"></i>Showing only your requests</span>
+        <?php endif; ?>
     </div>
     <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#createPrModal">
         <i class="bi bi-plus-circle me-1"></i> Add Request
@@ -33,7 +37,7 @@
                     <tr>
                         <td class="fw-semibold"><?= htmlspecialchars($r['pr_number']) ?></td>
                         <td><?= htmlspecialchars(date('M d, Y', strtotime($r['date_created']))) ?></td>
-                        <td><?= htmlspecialchars(ucfirst($r['department'])) ?></td>
+                        <td><?= htmlspecialchars(deptLabel($r['department'])) ?></td>
                         <td><?= htmlspecialchars($r['purpose']) ?></td>
                         <td>
                             <?php if ($r['priority'] === 'immediate'): ?>
@@ -46,6 +50,8 @@
                         <td>
                             <?php if ($r['status'] === 'approved'): ?>
                             <span class="badge bg-success">Approved</span>
+                            <?php elseif ($r['status'] === 'in_process'): ?>
+                            <span class="badge bg-info text-dark">In Process</span>
                             <?php else: ?>
                             <span class="badge bg-warning text-dark">Submitted</span>
                             <?php endif; ?>
@@ -56,6 +62,21 @@
                                    target="_blank" href="?controller=pr&action=print&id=<?= (int) $r['pr_id'] ?>" title="Print PR" aria-label="Print PR">
                                     <i class="bi bi-printer"></i>
                                 </a>
+                                <?php if (($canProcess ?? false) && $r['status'] === 'approved'): ?>
+                                <button type="button" class="btn btn-sm btn-outline-warning tt" data-bs-placement="bottom"
+                                        data-bs-toggle="modal" data-bs-target="#processPrModal"
+                                        data-pr-id="<?= (int) $r['pr_id'] ?>"
+                                        data-pr-number="<?= htmlspecialchars($r['pr_number']) ?>"
+                                        data-date="<?= htmlspecialchars(date('M d, Y', strtotime($r['date_created']))) ?>"
+                                        data-department="<?= htmlspecialchars(deptLabel($r['department'])) ?>"
+                                        data-purpose="<?= htmlspecialchars($r['purpose']) ?>"
+                                        data-priority="<?= $r['priority'] === 'immediate' ? 'Immediate' : 'Standard' ?>"
+                                        data-items="<?= (int) $r['item_count'] ?>"
+                                        data-back="list"
+                                        title="Process" aria-label="Process">
+                                    <i class="bi bi-gear"></i>
+                                </button>
+                                <?php endif; ?>
                                 <?php if ($r['status'] === 'submitted' && (int) $r['created_by'] === (int) $_SESSION['user_id']): ?>
                                 <button type="button" class="btn btn-sm btn-outline-secondary edit-pr-btn tt" data-bs-placement="bottom"
                                         data-edit-id="<?= (int) $r['pr_id'] ?>" title="Edit" aria-label="Edit">
@@ -71,7 +92,7 @@
                                    data-confirm="Delete <?= htmlspecialchars($r['pr_number']) ?>?" title="Delete" aria-label="Delete">
                                     <i class="bi bi-trash"></i>
                                 </a>
-                                <?php elseif ($r['status'] === 'approved' && !empty($r['signed_file_path'])): ?>
+                                <?php elseif (in_array($r['status'], ['approved', 'in_process'], true) && !empty($r['signed_file_path'])): ?>
                                 <a class="btn btn-sm btn-outline-success tt" data-bs-placement="bottom"
                                    target="_blank" href="<?= URL_ROOT . htmlspecialchars($r['signed_file_path']) ?>" title="View signed PRF" aria-label="View signed PRF">
                                     <i class="bi bi-paperclip"></i>
@@ -88,6 +109,9 @@
 </div>
 
 <?php include __DIR__ . '/_prf_form.php'; ?>
+<?php if ($canProcess ?? false): ?>
+<?php include __DIR__ . '/_process_modal.php'; ?>
+<?php endif; ?>
 
 <!-- Approve (attach signed PRF) Modal -->
 <div class="modal fade" id="approvePrModal" tabindex="-1" aria-hidden="true">

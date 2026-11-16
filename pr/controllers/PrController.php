@@ -3,6 +3,7 @@ namespace App\Controllers;
 
 use App\Models\PurchaseRequestModel;
 use App\Models\ProcurementPrModel;
+use App\Models\GlAccountModel;
 use App\Models\AuditModel;
 use App\Models\WarehouseModel;
 use App\Core\BaseModel;
@@ -23,14 +24,20 @@ class PrController {
         $this->prModel = new PurchaseRequestModel();
     }
 
-    /** Requestor list — own department's PRs (creator sees all their own). */
+    /** Requestor list — own PRs; procurement roles + System Admin see all. */
     public function index() {
         $statusFilter = $_GET['status'] ?? '';
-        $requests = $this->prModel->getRequests(null, $statusFilter !== '' ? $statusFilter : null);
+        $seeAll = $this->isProcurementAllowed();
+        $requests = $this->prModel->getRequests(
+            $seeAll ? null : (int) ($_SESSION['user_id'] ?? 0),
+            $statusFilter !== '' ? $statusFilter : null
+        );
         $this->render('index', [
             'page_title'   => 'Purchase Request',
             'requests'     => $requests,
             'statusFilter' => $statusFilter,
+            'seeAll'       => $seeAll,
+            'canProcess'   => $this->isProcurementAllowed(),
             'dept'         => $_SESSION['department'] ?? '',
             'today'        => date('Y-m-d'),
         ]);
@@ -56,7 +63,9 @@ class PrController {
         }
         $header = [
             'pr_number'       => PurchaseRequestModel::nextPrNumber(date('Y')),
-            'department'      => trim($_POST['department'] ?? ($_SESSION['department'] ?? '')),
+            // Empty-safe: layout modal-reset blanks the hidden field on close,
+            // so '' must fall back to the session department, not win over it.
+            'department'      => trim($_POST['department'] ?? '') ?: ($_SESSION['department'] ?? ''),
             'purpose'         => $purpose,
             'date_created'    => $_POST['date_created'] ?? date('Y-m-d'),
             'classification'  => in_array($_POST['classification'] ?? '', ['new', 'repeat_order'], true) ? $_POST['classification'] : 'new',
@@ -181,9 +190,9 @@ class PrController {
         header('Content-Type: application/json');
         $query = trim($_GET['q'] ?? '');
         $like = "%{$query}%";
-        // Warehouse users can pick any item type; every other department is
-        // restricted to Supplies only.
-        $suppliesOnly = ($_SESSION['department'] ?? '') !== 'warehouse';
+        // Warehouse users and procurement viewers (Process modal) can pick any
+        // item type; ordinary requestors are restricted to Supplies only.
+        $suppliesOnly = ($_SESSION['department'] ?? '') !== 'warehouse' && !$this->isProcurementAllowed();
         $where = $suppliesOnly ? " AND item_type = 'SUPPLIES'" : '';
         if ($query === '') {
             $sql = "SELECT item_id, item_code, item_description, item_uom
@@ -199,6 +208,29 @@ class PrController {
             $stmt = BaseModel::getConnection()->prepare($sql);
             $stmt->execute(['q1' => $like, 'q2' => $like]);
         }
+        echo json_encode($stmt->fetchAll());
+        exit;
+    }
+
+    /** JSON autocomplete of active GL accounts for the Account Charged field
+     *  on the Process modal — procurement viewers only. */
+    public function searchGlAccounts() {
+        header('Content-Type: application/json');
+        if (!$this->isProcurementAllowed()) {
+            http_response_code(403);
+            echo json_encode(['error' => 'You do not have access to that feature.']);
+            exit;
+        }
+        $query = trim($_GET['q'] ?? '');
+        $like = "%{$query}%";
+        $sql = "SELECT gl_account_code, gl_account_description
+                FROM gl_accounts
+                WHERE `remove` = 0 AND status = 1
+                  AND (gl_account_code LIKE :q1 OR gl_account_description LIKE :q2)
+                ORDER BY gl_account_code ASC
+                LIMIT 20";
+        $stmt = BaseModel::getConnection()->prepare($sql);
+        $stmt->execute(['q1' => $like, 'q2' => $like]);
         echo json_encode($stmt->fetchAll());
         exit;
     }
@@ -279,7 +311,7 @@ class PrController {
         exit;
     }
 
-    /** Procurement queue — approved PRFs awaiting purchasing action. */
+    /** Procurement queue — approved PRFs (and those already in process) awaiting purchasing action. */
     public function procurement() {
         $role = $_SESSION['role'] ?? '';
         $department = $_SESSION['department'] ?? '';
@@ -288,7 +320,7 @@ class PrController {
             header('Location: ' . \App\Helpers\RoleHelper::homeUrl());
             exit;
         }
-        $requests = $this->prModel->getRequests(null, 'approved');
+        $requests = $this->prModel->getRequests(null, ['approved', 'in_process']);
         $prModel = new ProcurementPrModel();
         $prsByPrf = $prModel->getByPrfIds(array_map(function ($r) { return (int) $r['pr_id']; }, $requests));
         $this->render('procurement', [
@@ -296,6 +328,122 @@ class PrController {
             'requests'   => $requests,
             'prsByPrf'   => $prsByPrf,
         ]);
+    }
+
+    /**
+     * Process (procurement): create the formal PR###### from the PRF and
+     * flip the PRF approved -> in_process in one action (merged the former
+     * createPr flow). Modal POST with prefilled line items.
+     */
+    public function process() {
+        if (!$this->isProcurementAllowed()) {
+            $_SESSION['error'] = 'You do not have access to that feature.';
+            header('Location: ' . \App\Helpers\RoleHelper::homeUrl());
+            exit;
+        }
+        $back = (($_POST['back'] ?? 'queue') === 'list')
+            ? '?controller=pr'
+            : '?controller=pr&action=procurement';
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $prfId = (int) ($_POST['prf_id'] ?? 0);
+        $prf = $prfId > 0 ? $this->prModel->getById($prfId) : null;
+        if (!$prf) {
+            $_SESSION['error'] = 'Purchase request not found.';
+            header('Location: ' . $back);
+            exit;
+        }
+        if ($prf['status'] === 'in_process') {
+            $_SESSION['error'] = 'This purchase request is already being processed.';
+            header('Location: ' . $back);
+            exit;
+        }
+        if ($prf['status'] !== 'approved') {
+            $_SESSION['error'] = 'Only approved purchase requests can be processed.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $prModel = new ProcurementPrModel();
+        if ($prModel->getByPrfIds([$prfId])) {
+            $_SESSION['error'] = 'A Purchase Requisition already exists for this PRF.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $sites = ProcurementPrModel::PO_SITES;
+        $poSite = $_POST['po_site'] ?? '001';
+        $shipTo = $_POST['ship_to'] ?? '001';
+        if (!isset($sites[$poSite]) || !isset($sites[$shipTo])) {
+            $_SESSION['error'] = 'Invalid PO Site / Ship To selection.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $descs = (array) ($_POST['description'] ?? []);
+        $qtys  = (array) ($_POST['qty'] ?? []);
+        $units = (array) ($_POST['unit'] ?? []);
+        $accts = (array) ($_POST['account_charged'] ?? []);
+        $acdescs = (array) ($_POST['account_desc'] ?? []);
+        $dates = (array) ($_POST['date_required'] ?? []);
+        $codes = (array) ($_POST['item_code'] ?? []);
+        $items = [];
+        foreach ($descs as $i => $desc) {
+            if (trim((string) $desc) === '') {
+                continue;
+            }
+            $qty = (float) str_replace(',', '', (string) ($qtys[$i] ?? 0));
+            if ($qty <= 0) {
+                continue;
+            }
+            $items[] = [
+                'description'        => trim((string) $desc),
+                'qty'                => $qty,
+                'unit'               => trim((string) ($units[$i] ?? '')),
+                'account_charged'    => trim((string) ($accts[$i] ?? '')),
+                'account_description'=> trim((string) ($acdescs[$i] ?? '')),
+                'date_required'      => trim((string) ($dates[$i] ?? '')),
+                'item_code'          => trim((string) ($codes[$i] ?? '')),
+            ];
+        }
+        if (!$items) {
+            $_SESSION['error'] = 'Add at least one line item with a quantity.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        // PR number is always system generated — any posted value is ignored.
+        $prNumber = ProcurementPrModel::nextPrNumber();
+        $header = [
+            'pr_number'     => $prNumber,
+            'prf_id'        => $prfId,
+            'po_site_code'  => $poSite,
+            'ship_to_code'  => $shipTo,
+            'priority'      => $prf['priority'] === 'immediate' ? 'immediate' : 'standard',
+            'pr_date'       => $_POST['pr_date'] ?? date('Y-m-d'),
+            'department'    => $prf['department'],
+            'requisitioner' => $prf['prepared_by'],
+            'purpose'       => $prf['purpose'],
+            'created_by'    => (int) $_SESSION['user_id'],
+        ];
+        try {
+            $newPrId = $prModel->createPr($header, $items);
+            $flipped = $this->prModel->markInProcess($prfId);
+            if (!$flipped) {
+                error_log('process: PR created but PRF status flip failed for prf #' . $prfId);
+            }
+            AuditModel::log($_SESSION['user_id'], 'CREATE', 'procurement_pr', 'Created Purchase Requisition ' . $header['pr_number'] . ' from PRF ' . $prf['pr_number'] . ' with ' . count($items) . ' line item(s)', null, ['pr_number' => $header['pr_number'], 'prf_number' => $prf['pr_number']], 'procurement_pr', $newPrId);
+            AuditModel::log($_SESSION['user_id'], 'UPDATE', 'pr', 'Marked Purchase Request ' . $prf['pr_number'] . ' as In Process', ['status' => 'approved'], ['status' => 'in_process'], 'purchase_request', $prfId);
+            $_SESSION['success'] = 'Purchase Requisition ' . $header['pr_number'] . ' created from ' . $prf['pr_number'] . ' — the request is now In Process.';
+        } catch (\Throwable $e) {
+            error_log('PR process error: ' . $e->getMessage());
+            $_SESSION['error'] = 'Failed to process the purchase request.';
+        }
+        header('Location: ' . $back);
+        exit;
     }
 
     /** Can the current user access Procurement PR actions? */
@@ -315,7 +463,7 @@ class PrController {
             exit;
         }
         $prf = $this->prModel->getById((int) ($_GET['id'] ?? 0));
-        if (!$prf || $prf['status'] !== 'approved') {
+        if (!$prf || !in_array($prf['status'], ['approved', 'in_process'], true)) {
             http_response_code(404);
             echo json_encode(['error' => 'Purchase request not found or not approved.']);
             exit;
@@ -327,91 +475,6 @@ class PrController {
             'pr_number' => ProcurementPrModel::nextPrNumber(),
             'sites'     => ProcurementPrModel::PO_SITES,
         ]);
-        exit;
-    }
-
-    /** Create a formal PR from an approved PRF (POST from the Create PR modal). */
-    public function createPr() {
-        if (!$this->isProcurementAllowed()) {
-            $_SESSION['error'] = 'You do not have access to that feature.';
-            header('Location: ' . \App\Helpers\RoleHelper::homeUrl());
-            exit;
-        }
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            header('Location: ?controller=pr&action=procurement');
-            exit;
-        }
-        $prf = $this->prModel->getById((int) ($_POST['prf_id'] ?? 0));
-        if (!$prf || $prf['status'] !== 'approved') {
-            $_SESSION['error'] = 'The source purchase request is not approved.';
-            header('Location: ?controller=pr&action=procurement');
-            exit;
-        }
-        $sites = ProcurementPrModel::PO_SITES;
-        $poSite = $_POST['po_site'] ?? '001';
-        $shipTo = $_POST['ship_to'] ?? '001';
-        if (!isset($sites[$poSite]) || !isset($sites[$shipTo])) {
-            $_SESSION['error'] = 'Invalid PO Site / Ship To selection.';
-            header('Location: ?controller=pr&action=procurement');
-            exit;
-        }
-        $items = [];
-        $descs   = (array) ($_POST['description'] ?? []);
-        $qtys    = (array) ($_POST['qty'] ?? []);
-        $units   = (array) ($_POST['unit'] ?? []);
-        $accts   = (array) ($_POST['account_charged'] ?? []);
-        $dates   = (array) ($_POST['date_required'] ?? []);
-        $codes   = (array) ($_POST['item_code'] ?? []);
-        foreach ($descs as $i => $desc) {
-            if (trim((string) $desc) === '') {
-                continue;
-            }
-            $qty = (float) str_replace(',', '', (string) ($qtys[$i] ?? 0));
-            if ($qty <= 0) {
-                continue;
-            }
-            $items[] = [
-                'description'     => trim((string) $desc),
-                'qty'             => $qty,
-                'unit'            => trim((string) ($units[$i] ?? '')),
-                'account_charged' => trim((string) ($accts[$i] ?? '')),
-                'date_required'   => trim((string) ($dates[$i] ?? '')),
-                'item_code'       => trim((string) ($codes[$i] ?? '')),
-            ];
-        }
-        if (!$items) {
-            $_SESSION['error'] = 'Add at least one line item with a quantity.';
-            header('Location: ?controller=pr&action=procurement');
-            exit;
-        }
-        // Accept a manually edited PR number when it matches the PR###### format;
-        // otherwise fall back to the global auto-increment sequence.
-        $prNumber = strtoupper(trim($_POST['pr_number'] ?? ''));
-        if (!preg_match('/^PR\d{1,6}$/', $prNumber)) {
-            $prNumber = ProcurementPrModel::nextPrNumber();
-        }
-        $prModel = new ProcurementPrModel();
-        $header = [
-            'pr_number'     => $prNumber,
-            'prf_id'        => (int) $prf['pr_id'],
-            'po_site_code'  => $poSite,
-            'ship_to_code'  => $shipTo,
-            'priority'      => $prf['priority'] === 'immediate' ? 'immediate' : 'standard',
-            'pr_date'       => $_POST['pr_date'] ?? date('Y-m-d'),
-            'department'    => $prf['department'],
-            'requisitioner' => $prf['prepared_by'],
-            'purpose'       => $prf['purpose'],
-            'created_by'    => (int) $_SESSION['user_id'],
-        ];
-        try {
-            $prId = $prModel->createPr($header, $items);
-            AuditModel::log($_SESSION['user_id'], 'CREATE', 'procurement_pr', 'Created Purchase Requisition ' . $header['pr_number'] . ' from PRF ' . $prf['pr_number'] . ' with ' . count($items) . ' line item(s)', null, ['pr_number' => $header['pr_number'], 'prf_number' => $prf['pr_number']], 'procurement_pr', $prId);
-            $_SESSION['success'] = 'Purchase Requisition ' . $header['pr_number'] . ' created from ' . $prf['pr_number'] . '.';
-        } catch (\Throwable $e) {
-            error_log('PR createPr error: ' . $e->getMessage());
-            $_SESSION['error'] = 'Failed to create the purchase requisition.';
-        }
-        header('Location: ?controller=pr&action=procurement');
         exit;
     }
 

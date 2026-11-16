@@ -20,7 +20,7 @@ $today = $today ?? date('Y-m-d');
                     <div class="row g-3 mb-2">
                         <div class="col-md-4">
                             <label class="form-label">Department <span class="text-danger">*</span></label>
-                            <input type="text" class="form-control" value="<?= htmlspecialchars(ucfirst($dept)) ?>" readonly>
+                            <input type="text" class="form-control" id="prFormDeptLabel" value="<?= htmlspecialchars(deptLabel($dept)) ?>" readonly>
                             <input type="hidden" name="department" value="<?= htmlspecialchars($dept) ?>">
                         </div>
                         <div class="col-md-8">
@@ -117,6 +117,19 @@ document.addEventListener('DOMContentLoaded', function() {
     const prModalTitle = document.getElementById('prModalTitle');
     const prFormPrId = document.getElementById('prFormPrId');
     const CREATE_ACTION = '?controller=pr&action=create';
+    // The department hidden input is cleared by the layout's modal-reset on
+    // close — capture the server-rendered defaults so create mode can restore
+    // them (otherwise a reopen submits department='' despite the readonly
+    // label still showing the right name).
+    const deptHidden = prForm.querySelector('input[name="department"]');
+    const deptLabelInput = document.getElementById('prFormDeptLabel');
+    const DEFAULT_DEPT = deptHidden ? deptHidden.value : '';
+    const DEFAULT_DEPT_LABEL = deptLabelInput ? deptLabelInput.value : '';
+    const DEPT_LABELS = { admin: 'System Admin', warehouse: 'Warehouse', production: 'Production', finance: 'Finance', qc: 'QC', qa: 'QA', rnd: 'R&D' };
+    function deptLabelJs(d) {
+        if (!d) return '—';
+        return DEPT_LABELS[d] || (d.charAt(0).toUpperCase() + d.slice(1));
+    }
     let rowIdx = 0;
 
     function addRow(item) {
@@ -208,6 +221,8 @@ document.addEventListener('DOMContentLoaded', function() {
         prModalTitle.innerHTML = '<i class="bi bi-file-earmark-text me-2"></i>New Purchase Request';
         prForm.action = CREATE_ACTION;
         prFormPrId.value = '';
+        if (deptHidden) deptHidden.value = DEFAULT_DEPT;
+        if (deptLabelInput) deptLabelInput.value = DEFAULT_DEPT_LABEL;
     };
     prModalEl.addEventListener('show.bs.modal', function(event) {
         const btn = event.relatedTarget;
@@ -224,6 +239,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 prModalTitle.innerHTML = '<i class="bi bi-pencil-square me-2"></i>Edit Purchase Request ' + data.pr.pr_number;
                 prForm.action = '?controller=pr&action=update';
                 prFormPrId.value = data.pr.pr_id;
+                if (deptHidden) deptHidden.value = data.pr.department || DEFAULT_DEPT;
+                if (deptLabelInput) deptLabelInput.value = deptLabelJs(data.pr.department || '');
                 document.getElementById('createPrModal').querySelector('input[name="purpose"]').value = data.pr.purpose || '';
                 prForm.querySelector('input[name="date_created"]').value = data.pr.date_created || '';
                 prForm.querySelector('select[name="classification"]').value = data.pr.classification || 'new';

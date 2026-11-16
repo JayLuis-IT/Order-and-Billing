@@ -28,8 +28,12 @@ class PurchaseRequestModel extends BaseModel
         return sprintf('PR-%s-%04d', $year, $max + 1);
     }
 
-    /** List PRs, newest first. $mineOnly limits to one creator. */
-    public function getRequests(?int $createdBy = null, ?string $status = null): array
+    /**
+     * List PRs, newest first. $mineOnly limits to one creator.
+     * $status accepts a single value or an array (IN clause) — the
+     * procurement queue needs approved + in_process together.
+     */
+    public function getRequests(?int $createdBy = null, $status = null): array
     {
         $sql = "SELECT pr.*, u.username AS creator_name, u.full_name AS creator_full_name,
                        (SELECT COUNT(*) FROM purchase_request_items pri WHERE pri.pr_id = pr.pr_id) AS item_count
@@ -41,7 +45,18 @@ class PurchaseRequestModel extends BaseModel
             $sql .= " AND pr.created_by = :created_by";
             $params['created_by'] = $createdBy;
         }
-        if ($status !== null && $status !== '') {
+        if (is_array($status)) {
+            $status = array_values(array_filter($status, static fn ($s) => $s !== null && $s !== ''));
+            if ($status) {
+                $placeholders = [];
+                foreach ($status as $i => $s) {
+                    $key = 'status' . $i;
+                    $placeholders[] = ':' . $key;
+                    $params[$key] = $s;
+                }
+                $sql .= ' AND pr.status IN (' . implode(', ', $placeholders) . ')';
+            }
+        } elseif ($status !== null && $status !== '') {
             $sql .= " AND pr.status = :status";
             $params['status'] = $status;
         }
@@ -202,6 +217,19 @@ class PurchaseRequestModel extends BaseModel
             'approved_by' => $userId,
             'pr_id'       => $prId,
         ]);
+    }
+
+    /** Procurement clicks Process: approved -> in_process. Returns true when
+     *  a row actually changed (only the approved transition is allowed). */
+    public function markInProcess(int $prId): bool
+    {
+        $stmt = self::getConnection()->prepare(
+            "UPDATE purchase_requests
+             SET status = 'in_process'
+             WHERE pr_id = :pr_id AND remove = 0 AND status = 'approved'"
+        );
+        $stmt->execute(['pr_id' => $prId]);
+        return $stmt->rowCount() > 0;
     }
 
     public function softDelete(int $prId): void
