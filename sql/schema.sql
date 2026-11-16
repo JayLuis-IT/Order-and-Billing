@@ -1,5 +1,5 @@
-﻿-- Manufacturing Management System Database Schema
--- Generated from the live `manufacturing_mgmt` database on 2026-11-05 (MariaDB 10.4.32).
+-- Manufacturing Management System Database Schema
+-- Generated from the live `manufacturing_mgmt` database on 2026-11-13 (MariaDB 10.4.32).
 -- Regenerate with:
 --   mysqldump -u root --no-data --skip-add-drop-table --routines=FALSE --triggers=FALSE manufacturing_mgmt
 -- Normalized for repo use: CREATE TABLE IF NOT EXISTS, AUTO_INCREMENT counters stripped,
@@ -114,6 +114,13 @@ CREATE TABLE IF NOT EXISTS `backloads` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Temporary table structure for view `customer_finished_goods`
+--
+
+SET @saved_cs_client     = @@character_set_client;
+SET character_set_client = utf8;
+SET character_set_client = @saved_cs_client;
+
 --
 -- Table structure for table `customers`
 --
@@ -281,6 +288,29 @@ CREATE TABLE IF NOT EXISTS `fg_boms` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Table structure for table `gl_accounts`
+--
+
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE IF NOT EXISTS `gl_accounts` (
+  `gl_account_id` int(11) NOT NULL AUTO_INCREMENT,
+  `gl_account_code` varchar(30) NOT NULL,
+  `gl_account_description` varchar(255) NOT NULL,
+  `report_included` varchar(100) DEFAULT NULL,
+  `grouping_financial_report` varchar(100) DEFAULT NULL,
+  `status` tinyint(1) DEFAULT 1 COMMENT '0=inactive, 1=active',
+  `remove` tinyint(1) DEFAULT 0 COMMENT '0=active, 1=soft deleted',
+  `date_created` datetime DEFAULT current_timestamp(),
+  `last_update` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`gl_account_id`),
+  UNIQUE KEY `gl_account_code` (`gl_account_code`),
+  KEY `idx_status` (`status`),
+  KEY `idx_remove` (`remove`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
 -- Table structure for table `inventory_balances`
 --
 
@@ -327,6 +357,29 @@ CREATE TABLE IF NOT EXISTS `inventory_stock` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Table structure for table `item_supplier_prices`
+--
+
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE IF NOT EXISTS `item_supplier_prices` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `item_id` int(11) NOT NULL,
+  `supplier_id` int(11) NOT NULL,
+  `price` decimal(15,2) NOT NULL,
+  `effective_date` date NOT NULL,
+  `remarks` varchar(255) DEFAULT NULL,
+  `created_by` int(11) DEFAULT NULL,
+  `date_created` datetime DEFAULT current_timestamp(),
+  `remove` tinyint(1) DEFAULT 0 COMMENT '0=active, 1=soft deleted',
+  `last_update` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_item_supplier` (`item_id`,`supplier_id`),
+  KEY `idx_supplier_date` (`supplier_id`,`effective_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
 -- Table structure for table `items`
 --
 
@@ -339,6 +392,7 @@ CREATE TABLE IF NOT EXISTS `items` (
   `raw_c_type` varchar(50) DEFAULT NULL,
   `item_description` varchar(255) NOT NULL,
   `customer_id` int(11) DEFAULT NULL,
+  `supplier_id` int(11) DEFAULT NULL,
   `item_uom` varchar(50) NOT NULL COMMENT 'Unit of Measurement',
   `uom_conversion` int(11) DEFAULT NULL COMMENT 'Units per case, e.g. 10 means 10 PCS = 1 CS. NULL when UOM is CS',
   `item_size` varchar(50) DEFAULT NULL,
@@ -351,7 +405,8 @@ CREATE TABLE IF NOT EXISTS `items` (
   PRIMARY KEY (`item_id`),
   KEY `idx_item_code` (`item_code`),
   KEY `idx_status` (`status`),
-  KEY `idx_remove` (`remove`)
+  KEY `idx_remove` (`remove`),
+  KEY `idx_supplier` (`supplier_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -369,7 +424,7 @@ CREATE TABLE IF NOT EXISTS `lmr_lot_allocations` (
   `item_code` varchar(50) DEFAULT NULL,
   `lot_number` varchar(100) NOT NULL,
   `allocated_qty` decimal(15,4) NOT NULL DEFAULT 0.0000,
-  `status` enum('active','cancelled') NOT NULL DEFAULT 'active',
+  `status` enum('active','cancelled','consumed','returned') NOT NULL DEFAULT 'active',
   `created_by` int(11) DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
@@ -432,6 +487,7 @@ CREATE TABLE IF NOT EXISTS `lmr_orders` (
   `lot_series` varchar(100) DEFAULT NULL,
   `lot_number` varchar(100) DEFAULT NULL,
   `po_number` varchar(100) DEFAULT NULL,
+  `job_order_no` varchar(100) DEFAULT NULL,
   `bom_code` varchar(50) DEFAULT NULL,
   `item_code` varchar(50) DEFAULT NULL,
   `item_description` varchar(255) DEFAULT NULL,
@@ -439,8 +495,10 @@ CREATE TABLE IF NOT EXISTS `lmr_orders` (
   `created_by` int(11) DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `materials_consumed_at` datetime DEFAULT NULL,
   PRIMARY KEY (`lmr_id`),
-  UNIQUE KEY `uk_manufacturing_orders_number` (`lmr_number`)
+  UNIQUE KEY `uk_manufacturing_orders_number` (`lmr_number`),
+  UNIQUE KEY `uk_lmr_orders_job_order` (`job_order_no`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -595,6 +653,58 @@ CREATE TABLE IF NOT EXISTS `price_list` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Table structure for table `procurement_pr_items`
+--
+
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE IF NOT EXISTS `procurement_pr_items` (
+  `pri_id` int(10) unsigned NOT NULL AUTO_INCREMENT,
+  `pr_id` int(10) unsigned NOT NULL,
+  `line_no` int(10) unsigned NOT NULL DEFAULT 1,
+  `item_number` varchar(32) DEFAULT NULL COMMENT 'PR######-0000000000NN',
+  `description` varchar(255) NOT NULL,
+  `account_charged` varchar(30) DEFAULT NULL,
+  `account_description` varchar(255) DEFAULT NULL,
+  `unit` varchar(20) DEFAULT NULL,
+  `qty` decimal(12,3) NOT NULL DEFAULT 0.000,
+  `date_required` date DEFAULT NULL,
+  PRIMARY KEY (`pri_id`),
+  KEY `idx_ppi_pr` (`pr_id`),
+  CONSTRAINT `fk_ppi_pr_id` FOREIGN KEY (`pr_id`) REFERENCES `procurement_prs` (`pr_id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `procurement_prs`
+--
+
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE IF NOT EXISTS `procurement_prs` (
+  `pr_id` int(10) unsigned NOT NULL AUTO_INCREMENT,
+  `pr_number` varchar(20) NOT NULL,
+  `prf_id` int(10) unsigned DEFAULT NULL COMMENT 'Source purchase_requests.pr_id (PRF)',
+  `po_site_code` varchar(10) NOT NULL DEFAULT '001',
+  `ship_to_code` varchar(10) NOT NULL DEFAULT '001',
+  `priority` enum('immediate','standard') NOT NULL DEFAULT 'standard',
+  `pr_status` varchar(20) NOT NULL DEFAULT 'Open',
+  `printed` tinyint(1) NOT NULL DEFAULT 0,
+  `pr_date` date NOT NULL,
+  `department` varchar(50) DEFAULT NULL,
+  `requisitioner` varchar(100) DEFAULT NULL,
+  `purpose` varchar(255) DEFAULT NULL,
+  `created_by` int(10) unsigned NOT NULL,
+  `date_created` datetime NOT NULL DEFAULT current_timestamp(),
+  `remove` tinyint(1) NOT NULL DEFAULT 0,
+  PRIMARY KEY (`pr_id`),
+  UNIQUE KEY `uq_procurement_pr_number` (`pr_number`),
+  KEY `idx_ppr_prf` (`prf_id`),
+  CONSTRAINT `fk_ppr_prf` FOREIGN KEY (`prf_id`) REFERENCES `purchase_requests` (`pr_id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
 -- Table structure for table `production_history`
 --
 
@@ -660,6 +770,7 @@ CREATE TABLE IF NOT EXISTS `production_lots` (
   `is_removed` tinyint(1) DEFAULT 0 COMMENT '0=active, 1=soft deleted',
   `transferred_from_po_id` int(11) DEFAULT NULL,
   `last_update` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `lot_closed_manual` tinyint(1) DEFAULT NULL,
   PRIMARY KEY (`lot_id`),
   KEY `po_id` (`po_id`),
   KEY `poi_id` (`poi_id`),
@@ -763,6 +874,7 @@ CREATE TABLE IF NOT EXISTS `purchase_order_items` (
 CREATE TABLE IF NOT EXISTS `purchase_orders` (
   `po_id` int(11) NOT NULL AUTO_INCREMENT,
   `customer_po_number` varchar(100) DEFAULT NULL,
+  `job_order_no` varchar(100) DEFAULT NULL,
   `customer_po_date` date DEFAULT NULL,
   `po_number` varchar(50) NOT NULL,
   `customer_id` int(11) NOT NULL,
@@ -778,10 +890,77 @@ CREATE TABLE IF NOT EXISTS `purchase_orders` (
   `delivered_quantity` int(11) DEFAULT 0,
   `remove` tinyint(1) NOT NULL DEFAULT 0,
   PRIMARY KEY (`po_id`),
+  UNIQUE KEY `uk_purchase_orders_job_order` (`job_order_no`),
   KEY `customer_id` (`customer_id`),
   KEY `requested_by` (`requested_by`),
   CONSTRAINT `purchase_orders_ibfk_1` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`customer_id`),
   CONSTRAINT `purchase_orders_ibfk_2` FOREIGN KEY (`requested_by`) REFERENCES `users` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `purchase_request_items`
+--
+
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE IF NOT EXISTS `purchase_request_items` (
+  `pri_id` int(10) unsigned NOT NULL AUTO_INCREMENT,
+  `pr_id` int(10) unsigned NOT NULL,
+  `item_id` int(11) DEFAULT NULL,
+  `item_code` varchar(50) DEFAULT NULL,
+  `item_name` varchar(255) NOT NULL,
+  `specs` varchar(255) DEFAULT NULL,
+  `dimension` varchar(100) DEFAULT NULL,
+  `qty` decimal(15,2) NOT NULL DEFAULT 0.00,
+  `uom` varchar(50) DEFAULT NULL,
+  `preferred_supplier` varchar(150) DEFAULT NULL,
+  `sort_order` int(11) NOT NULL DEFAULT 0,
+  PRIMARY KEY (`pri_id`),
+  KEY `idx_pri_pr_id` (`pr_id`),
+  KEY `idx_pri_item_id` (`item_id`),
+  CONSTRAINT `fk_pri_item_id` FOREIGN KEY (`item_id`) REFERENCES `items` (`item_id`),
+  CONSTRAINT `fk_pri_pr_id` FOREIGN KEY (`pr_id`) REFERENCES `purchase_requests` (`pr_id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `purchase_requests`
+--
+
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE IF NOT EXISTS `purchase_requests` (
+  `pr_id` int(10) unsigned NOT NULL AUTO_INCREMENT,
+  `pr_number` varchar(30) NOT NULL,
+  `department` varchar(50) NOT NULL,
+  `purpose` varchar(255) NOT NULL,
+  `date_created` date NOT NULL,
+  `classification` enum('new','repeat_order') NOT NULL DEFAULT 'new',
+  `priority` enum('immediate','standard') NOT NULL DEFAULT 'standard',
+  `status` enum('submitted','approved','in_process') NOT NULL DEFAULT 'submitted',
+  `prepared_by` varchar(120) DEFAULT NULL,
+  `checked_by` varchar(120) DEFAULT NULL,
+  `approved_by_name` varchar(120) DEFAULT NULL,
+  `received_by` varchar(120) DEFAULT NULL,
+  `notes` text DEFAULT NULL,
+  `signed_file_name` varchar(255) DEFAULT NULL,
+  `signed_file_path` varchar(255) DEFAULT NULL,
+  `signed_file_type` varchar(100) DEFAULT NULL,
+  `signed_uploaded_by` int(11) DEFAULT NULL,
+  `signed_uploaded_at` datetime DEFAULT NULL,
+  `approved_by` int(11) DEFAULT NULL,
+  `approved_at` datetime DEFAULT NULL,
+  `created_by` int(11) NOT NULL,
+  `remove` tinyint(1) NOT NULL DEFAULT 0,
+  `date_added` datetime NOT NULL DEFAULT current_timestamp(),
+  `last_update` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`pr_id`),
+  UNIQUE KEY `uq_pr_number` (`pr_number`),
+  KEY `idx_pr_department` (`department`),
+  KEY `idx_pr_status` (`status`),
+  KEY `idx_pr_created_by` (`created_by`),
+  CONSTRAINT `fk_pr_created_by` FOREIGN KEY (`created_by`) REFERENCES `users` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -1064,6 +1243,31 @@ CREATE TABLE IF NOT EXISTS `supplier_orders` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Table structure for table `suppliers`
+--
+
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE IF NOT EXISTS `suppliers` (
+  `supplier_id` int(11) NOT NULL AUTO_INCREMENT,
+  `supplier_code` varchar(50) NOT NULL,
+  `supplier_name` varchar(255) NOT NULL,
+  `contact_person` varchar(100) DEFAULT NULL,
+  `phone` varchar(50) DEFAULT NULL,
+  `email` varchar(100) DEFAULT NULL,
+  `address` text DEFAULT NULL,
+  `date_created` datetime DEFAULT current_timestamp(),
+  `status` tinyint(1) DEFAULT 1 COMMENT '0=inactive, 1=active',
+  `remove` tinyint(1) DEFAULT 0 COMMENT '0=active, 1=soft deleted',
+  `last_update` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`supplier_id`),
+  UNIQUE KEY `supplier_code` (`supplier_code`),
+  KEY `idx_status` (`status`),
+  KEY `idx_remove` (`remove`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
 -- Table structure for table `users`
 --
 
@@ -1093,7 +1297,21 @@ CREATE TABLE IF NOT EXISTS `users` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Temporary table structure for view `view_inventory_status`
 --
+
+SET @saved_cs_client     = @@character_set_client;
+SET character_set_client = utf8;
+SET character_set_client = @saved_cs_client;
+
+--
+-- Temporary table structure for view `vw_lmr_available_stock`
+--
+
+SET @saved_cs_client     = @@character_set_client;
+SET character_set_client = utf8;
+SET character_set_client = @saved_cs_client;
+
 --
 -- Final view structure for view `customer_finished_goods`
 --
@@ -1157,4 +1375,5 @@ CREATE TABLE IF NOT EXISTS `users` (
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2026-11-05 17:18:17
+-- Dump completed on 2026-11-16 17:36:34
+
