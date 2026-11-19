@@ -98,28 +98,60 @@ $classLabel = $pr['classification'] === 'repeat_order' ? 'Repeat Order' : 'New';
         <table class="items">
             <thead>
                 <tr>
-                    <th style="width:34px">No.</th>
-                    <th style="width:90px">Item Code</th>
+                    <th style="width:30px">No.</th>
+                    <th style="width:75px">Item Code</th>
                     <th>Item Name / Description</th>
-                    <th style="width:95px">Item Specs</th>
-                    <th style="width:75px">Dimension</th>
-                    <th style="width:55px">Qty</th>
-                    <th style="width:55px">U/M</th>
-                    <th style="width:130px">Preferred Supplier</th>
+                    <th style="width:80px">Item Specs</th>
+                    <th style="width:65px">Dimension</th>
+                    <th style="width:45px">Qty</th>
+                    <th style="width:40px">U/M</th>
+                    <th style="width:95px">Preferred Supplier</th>
+                    <th style="width:115px">Supplier</th>
+                    <th style="width:80px">Price</th>
                 </tr>
             </thead>
             <tbody>
-                <?php $rows = max(10, count($items)); for ($i = 0; $i < $rows; $i++): $it = $items[$i] ?? null; ?>
+                <?php
+                // Quotes merged into their requested item's row block (rowspan):
+                // one item with 3 suppliers renders as ONE block of 3 rows.
+                $quotesByPri = [];
+                foreach (($quotes ?? []) as $q) {
+                    $quotesByPri[(int) $q['pri_id']][] = $q;
+                }
+                $itemNo = 0;
+                foreach ($items as $it):
+                    $itemNo++;
+                    $group = $quotesByPri[(int) $it['pri_id']] ?? [];
+                    if (!$group) {
+                        $group = [null]; // unquoted placeholder row (blank cells)
+                    }
+                    $n = count($group);
+                    foreach ($group as $gi => $q):
+                ?>
                 <tr>
-                    <td class="c"><?= $i + 1 ?></td>
-                    <td><?= $it ? $fmt($it['item_code']) : '' ?></td>
-                    <td><?= $it ? $fmt($it['item_name']) : '' ?></td>
-                    <td><?= $it ? $fmt($it['specs']) : '' ?></td>
-                    <td><?= $it ? $fmt($it['dimension']) : '' ?></td>
-                    <td class="r"><?= $it && $it['qty'] !== null ? $fmt(rtrim(rtrim(number_format((float) $it['qty'], 2), '0'), '.')) : '' ?></td>
-                    <td class="c"><?= $it ? $fmt($it['uom']) : '' ?></td>
-                    <td><?= $it ? $fmt($it['preferred_supplier']) : '' ?></td>
+                    <?php if ($gi === 0): ?>
+                    <td class="c" rowspan="<?= $n ?>"><?= $itemNo ?></td>
+                    <td rowspan="<?= $n ?>"><?= $fmt($it['item_code']) ?></td>
+                    <td rowspan="<?= $n ?>"><?= $fmt($it['item_name']) ?></td>
+                    <td rowspan="<?= $n ?>"><?= $fmt($it['specs']) ?></td>
+                    <td rowspan="<?= $n ?>"><?= $fmt($it['dimension']) ?></td>
+                    <td class="r" rowspan="<?= $n ?>"><?= $it['qty'] !== null ? $fmt(rtrim(rtrim(number_format((float) $it['qty'], 2), '0'), '.')) : '' ?></td>
+                    <td class="c" rowspan="<?= $n ?>"><?= $fmt($it['uom']) ?></td>
+                    <td rowspan="<?= $n ?>"><?= $fmt($it['preferred_supplier']) ?></td>
+                    <?php endif; ?>
+                    <td><?= $q ? $fmt(($q['supplier_name'] ?? '') !== '' ? $q['supplier_name'] : ('Supplier #' . $q['supplier_id'])) : '' ?></td>
+                    <td class="r"><?= $q ? '&#8369;' . $fmt(number_format((float) $q['price'], 2)) : '' ?></td>
                 </tr>
+                <?php
+                    endforeach;
+                endforeach;
+                $printedLines = 0;
+                foreach ($items as $it) {
+                    $printedLines += max(1, count($quotesByPri[(int) $it['pri_id']] ?? []));
+                }
+                $padRows = max(10 - $printedLines, 0);
+                for ($i = 0; $i < $padRows; $i++): ?>
+                <tr><td colspan="10">&nbsp;</td></tr>
                 <?php endfor; ?>
             </tbody>
         </table>

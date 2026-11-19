@@ -1,7 +1,7 @@
 <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
     <div class="alert alert-info py-2 small mb-0 flex-grow-1">
         <i class="bi bi-info-circle me-1"></i>
-        Approved Purchase Request Forms (PRF) forwarded by requestors after supervisor and President sign-off. Use the Process button to create the official Purchase Requisition (PR) and mark the PRF In Process, then print it.
+        <strong>Pending</strong>: use ⚙ to record where to buy (supplier + price) → returns to the requestor to print, sign and approve. <strong>Approved</strong>: ⚙ creates the official Purchase Requisition (PR) and marks it In Process.
     </div>
     <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#createPrModal">
         <i class="bi bi-plus-circle me-1"></i> Add Request
@@ -28,7 +28,7 @@
                 </thead>
                 <tbody>
                     <?php if (!$requests): ?>
-                    <tr><td colspan="10" class="text-center text-muted py-4">No approved purchase request forms yet.</td></tr>
+                    <tr><td colspan="10" class="text-center text-muted py-4">No purchase requests yet.</td></tr>
                     <?php endif; ?>
                     <?php foreach ($requests as $r): $pr = $prsByPrf[(int) $r['pr_id']] ?? null; ?>
                     <tr>
@@ -43,7 +43,11 @@
                         </td>
                         <td><?= htmlspecialchars(date('M d, Y', strtotime($r['date_created']))) ?></td>
                         <td>
-                            <?php if ($r['status'] === 'in_process'): ?>
+                            <?php if ($r['status'] === 'pending'): ?>
+                            <span class="badge bg-secondary">Pending</span>
+                            <?php elseif ($r['status'] === 'submitted'): ?>
+                            <span class="badge bg-warning text-dark">Submitted</span>
+                            <?php elseif ($r['status'] === 'in_process'): ?>
                             <span class="badge bg-info text-dark">In Process</span>
                             <?php else: ?>
                             <span class="badge bg-success">Approved</span>
@@ -60,11 +64,26 @@
                         </td>
                         <td><?= (int) $r['item_count'] ?></td>
                         <td class="small text-muted">
-                            <?= htmlspecialchars(date('M d, Y', strtotime($r['approved_at']))) ?><br>
+                            <?= $r['approved_at'] ? htmlspecialchars(date('M d, Y', strtotime($r['approved_at']))) : '—' ?><br>
                             <?= htmlspecialchars($r['creator_full_name'] ?? '') ?>
                         </td>
                         <td class="text-end">
                             <div class="d-inline-flex gap-1">
+                                <?php if ($r['status'] === 'pending'): ?>
+                                <button type="button" class="btn btn-sm btn-outline-warning tt" data-bs-placement="bottom"
+                                        data-bs-toggle="modal" data-bs-target="#supplierPriceModal"
+                                        data-pr-id="<?= (int) $r['pr_id'] ?>"
+                                        data-pr-number="<?= htmlspecialchars($r['pr_number']) ?>"
+                                        data-date="<?= htmlspecialchars(date('M d, Y', strtotime($r['date_created']))) ?>"
+                                        data-department="<?= htmlspecialchars(deptLabel($r['department'])) ?>"
+                                        data-purpose="<?= htmlspecialchars($r['purpose']) ?>"
+                                        data-priority="<?= $r['priority'] === 'immediate' ? 'Immediate' : 'Standard' ?>"
+                                        data-requestor="<?= htmlspecialchars($r['creator_full_name'] ?? ($r['prepared_by'] ?? '')) ?>"
+                                        data-back="queue"
+                                        title="Process" aria-label="Process">
+                                    <i class="bi bi-gear"></i>
+                                </button>
+                                <?php endif; ?>
                                 <?php if ($r['status'] === 'approved'): ?>
                                 <button type="button" class="btn btn-sm btn-outline-warning tt" data-bs-placement="bottom"
                                         data-bs-toggle="modal" data-bs-target="#processPrModal"
@@ -108,4 +127,5 @@
 </div>
 
 <?php include __DIR__ . '/_prf_form.php'; ?>
+<?php include __DIR__ . '/_supplier_price_modal.php'; ?>
 <?php include __DIR__ . '/_process_modal.php'; ?>

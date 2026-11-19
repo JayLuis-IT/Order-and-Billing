@@ -4,6 +4,7 @@ namespace App\Controllers;
 use App\Models\PurchaseRequestModel;
 use App\Models\ProcurementPrModel;
 use App\Models\GlAccountModel;
+use App\Models\SupplierModel;
 use App\Models\AuditModel;
 use App\Models\WarehouseModel;
 use App\Core\BaseModel;
@@ -38,6 +39,12 @@ class PrController {
             'statusFilter' => $statusFilter,
             'seeAll'       => $seeAll,
             'canProcess'   => $this->isProcurementAllowed(),
+            'suppliers'    => (new SupplierModel())->getAll(true),
+            // Formal PRs for In Process rows — the printer opens printPr for them.
+            'prsByPrf'     => (new ProcurementPrModel())->getByPrfIds(array_map(
+                fn($r) => (int) $r['pr_id'],
+                array_filter($requests, fn($r) => $r['status'] === 'in_process')
+            )),
             'dept'         => $_SESSION['department'] ?? '',
             'today'        => date('Y-m-d'),
         ]);
@@ -93,7 +100,7 @@ class PrController {
     public function edit() {
         header('Content-Type: application/json');
         $pr = $this->prModel->getById((int) ($_GET['id'] ?? 0));
-        if (!$pr || (int) $pr['created_by'] !== (int) $_SESSION['user_id'] || $pr['status'] !== 'submitted') {
+        if (!$pr || (int) $pr['created_by'] !== (int) $_SESSION['user_id'] || $pr['status'] !== 'pending') {
             http_response_code(404);
             echo json_encode(['error' => 'Purchase request not found or no longer editable.']);
             exit;
@@ -110,8 +117,8 @@ class PrController {
         }
         $prId = (int) ($_POST['pr_id'] ?? 0);
         $pr = $this->prModel->getById($prId);
-        if (!$pr || (int) $pr['created_by'] !== (int) $_SESSION['user_id'] || $pr['status'] !== 'submitted') {
-            $_SESSION['error'] = 'Only your own submitted requests can be edited.';
+        if (!$pr || (int) $pr['created_by'] !== (int) $_SESSION['user_id'] || $pr['status'] !== 'pending') {
+            $_SESSION['error'] = 'Only your own pending requests can be edited.';
             header('Location: ?controller=pr');
             exit;
         }
@@ -306,12 +313,14 @@ class PrController {
             exit;
         }
         $items = $this->prModel->getItems($prId);
-        extract(['pr' => $pr, 'items' => $items]);
+        extract(['pr' => $pr, 'items' => $items, 'quotes' => $this->prModel->getSuppliersForPr($prId)]);
         include __DIR__ . '/../views/print.php';
         exit;
     }
 
-    /** Procurement queue — approved PRFs (and those already in process) awaiting purchasing action. */
+    /** Procurement queue — every status: pending (add suppliers+prices),
+     *  submitted (awaiting requestor signatures), approved (create the PR),
+     *  in_process (formal PR exists). */
     public function procurement() {
         $role = $_SESSION['role'] ?? '';
         $department = $_SESSION['department'] ?? '';
@@ -320,14 +329,132 @@ class PrController {
             header('Location: ' . \App\Helpers\RoleHelper::homeUrl());
             exit;
         }
-        $requests = $this->prModel->getRequests(null, ['approved', 'in_process']);
+        $requests = $this->prModel->getRequests(null, ['pending', 'submitted', 'approved', 'in_process']);
         $prModel = new ProcurementPrModel();
         $prsByPrf = $prModel->getByPrfIds(array_map(function ($r) { return (int) $r['pr_id']; }, $requests));
         $this->render('procurement', [
-            'page_title' => 'Purchase Requests — Procurement',
-            'requests'   => $requests,
-            'prsByPrf'   => $prsByPrf,
+            'page_title'   => 'Purchase Requests — Procurement',
+            'requests'     => $requests,
+            'prsByPrf'     => $prsByPrf,
+            'suppliers'    => (new SupplierModel())->getAll(true),
         ]);
+    }
+
+    /** Supplier & price entry (procurement): pending -> submitted. The quotes
+     *  are saved on the request, which returns to the requestor to print,
+     *  sign and approve. Strictly pending — submitted is locked. */
+    public function supplierSubmit() {
+        if (!$this->isProcurementAllowed()) {
+            $_SESSION['error'] = 'You do not have access to that feature.';
+            header('Location: ' . \App\Helpers\RoleHelper::homeUrl());
+            exit;
+        }
+        $back = (($_POST['back'] ?? 'queue') === 'list')
+            ? '?controller=pr'
+            : '?controller=pr&action=procurement';
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $prId = (int) ($_POST['prf_id'] ?? 0);
+        $pr = $prId > 0 ? $this->prModel->getById($prId) : null;
+        if (!$pr) {
+            $_SESSION['error'] = 'Purchase request not found.';
+            header('Location: ' . $back);
+            exit;
+        }
+        if ($pr['status'] !== 'pending') {
+            $_SESSION['error'] = 'Only pending requests can be quoted. This request is already with the requestor.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $supplierModel = new SupplierModel();
+        $priIds = (array) ($_POST['pri_id'] ?? []);
+        $supplierIds = (array) ($_POST['supplier_id'] ?? []);
+        $prices = (array) ($_POST['price'] ?? []);
+
+        // Every line item of this request must end up quoted.
+        $itemIds = [];
+        foreach ($this->prModel->getItems($prId) as $it) {
+            $itemIds[(int) $it['pri_id']] = true;
+        }
+        if (!$itemIds) {
+            $_SESSION['error'] = 'This request has no line items.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $rows = [];
+        $quoted = [];
+        foreach ($supplierIds as $i => $sid) {
+            $sid = (int) $sid;
+            $priceRaw = trim((string) ($prices[$i] ?? ''));
+            $priId = (int) ($priIds[$i] ?? 0);
+            if ($sid <= 0 && $priceRaw === '') {
+                continue; // untouched draft row
+            }
+            if (!isset($itemIds[$priId])) {
+                $_SESSION['error'] = 'Invalid line item on one of the supplier rows.';
+                header('Location: ' . $back);
+                exit;
+            }
+            if ($sid <= 0) {
+                $_SESSION['error'] = 'Select a supplier for every priced row.';
+                header('Location: ' . $back);
+                exit;
+            }
+            $supplier = $supplierModel->getById($sid);
+            if (!$supplier || !$supplier['status']) {
+                $_SESSION['error'] = 'One of the selected suppliers is invalid or inactive.';
+                header('Location: ' . $back);
+                exit;
+            }
+            if ($priceRaw === '' || !is_numeric($priceRaw) || (float) $priceRaw < 0) {
+                $_SESSION['error'] = 'A price greater than or equal to 0 is required for ' . $supplier['supplier_name'] . '.';
+                header('Location: ' . $back);
+                exit;
+            }
+            $rows[] = [
+                'pri_id'      => $priId,
+                'supplier_id' => $sid,
+                'price'       => (float) $priceRaw,
+            ];
+            $quoted[$priId] = true;
+        }
+
+        $unquoted = 0;
+        foreach (array_keys($itemIds) as $pid) {
+            if (empty($quoted[$pid])) {
+                $unquoted++;
+            }
+        }
+        if ($unquoted > 0) {
+            $_SESSION['error'] = 'Add at least one supplier and price for every requested item — ' . $unquoted . ' item(s) still unquoted.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        try {
+            $this->prModel->replaceSuppliers($prId, $rows, (int) $_SESSION['user_id']);
+            if (!$this->prModel->markSubmitted($prId)) {
+                $_SESSION['error'] = 'This request is no longer pending.';
+                header('Location: ' . $back);
+                exit;
+            }
+            AuditModel::log($_SESSION['user_id'], 'UPDATE', 'pr',
+                'Added ' . count($rows) . ' supplier quote(s) across ' . count($quoted) . ' item(s) to ' . $pr['pr_number'] . ' and returned it to the requestor (pending -> submitted)',
+                ['status' => 'pending'],
+                ['status' => 'submitted', 'suppliers' => array_map(fn($r) => ['pri_id' => $r['pri_id'], 'supplier_id' => $r['supplier_id'], 'price' => $r['price']], $rows)],
+                'purchase_request', $prId);
+            $_SESSION['success'] = $pr['pr_number'] . ' updated with ' . count($rows) . ' supplier quote(s) across ' . count($quoted) . ' item(s) — sent back to the requestor to print, sign and approve.';
+        } catch (\Throwable $e) {
+            error_log('supplierSubmit error: ' . $e->getMessage());
+            $_SESSION['error'] = 'Failed to save supplier quotes.';
+        }
+        header('Location: ' . $back);
+        exit;
     }
 
     /**
@@ -463,9 +590,9 @@ class PrController {
             exit;
         }
         $prf = $this->prModel->getById((int) ($_GET['id'] ?? 0));
-        if (!$prf || !in_array($prf['status'], ['approved', 'in_process'], true)) {
+        if (!$prf || !in_array($prf['status'], ['pending', 'submitted', 'approved', 'in_process'], true)) {
             http_response_code(404);
-            echo json_encode(['error' => 'Purchase request not found or not approved.']);
+            echo json_encode(['error' => 'Purchase request not found.']);
             exit;
         }
         $prModel = new ProcurementPrModel();
@@ -480,16 +607,23 @@ class PrController {
 
     /** Standalone printable Purchase Requisition (PR###### ERP format). */
     public function printPr() {
-        if (!$this->isProcurementAllowed()) {
-            $_SESSION['error'] = 'You do not have access to that feature.';
-            header('Location: ' . \App\Helpers\RoleHelper::homeUrl());
-            exit;
-        }
         $prModel = new ProcurementPrModel();
         $pr = $prModel->getById((int) ($_GET['id'] ?? 0));
         if (!$pr) {
             $_SESSION['error'] = 'Purchase requisition not found.';
-            header('Location: ?controller=pr&action=procurement');
+            header('Location: ?controller=pr');
+            exit;
+        }
+        // Procurement/admin, or the requestor who created the source PRF —
+        // the Purchase Request list's printer opens this for In Process rows.
+        $allowed = $this->isProcurementAllowed();
+        if (!$allowed && !empty($pr['prf_id'])) {
+            $prf = $this->prModel->getById((int) $pr['prf_id']);
+            $allowed = $prf && (int) $prf['created_by'] === (int) $_SESSION['user_id'];
+        }
+        if (!$allowed) {
+            $_SESSION['error'] = 'You do not have access to that feature.';
+            header('Location: ' . \App\Helpers\RoleHelper::homeUrl());
             exit;
         }
         $items = $prModel->getItems((int) $pr['pr_id']);
@@ -508,12 +642,12 @@ class PrController {
     public function delete() {
         $prId = (int) ($_GET['id'] ?? 0);
         $pr = $this->prModel->getById($prId);
-        if ($pr && (int) $pr['created_by'] === (int) $_SESSION['user_id'] && $pr['status'] === 'submitted') {
+        if ($pr && (int) $pr['created_by'] === (int) $_SESSION['user_id'] && $pr['status'] === 'pending') {
             $this->prModel->softDelete($prId);
             AuditModel::log($_SESSION['user_id'], 'DELETE', 'pr', 'Deleted Purchase Request ' . $pr['pr_number'], null, null, 'purchase_request', $prId);
             $_SESSION['success'] = 'Purchase Request ' . $pr['pr_number'] . ' deleted.';
         } else {
-            $_SESSION['error'] = 'Only your own submitted requests can be deleted.';
+            $_SESSION['error'] = 'Only your own pending requests can be deleted.';
         }
         header('Location: ?controller=pr');
         exit;

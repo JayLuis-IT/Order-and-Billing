@@ -92,6 +92,65 @@ class PurchaseRequestModel extends BaseModel
         return $stmt->fetchAll();
     }
 
+    // ─── Supplier + price quotes (procurement, while pending) ────────────────
+
+    /** Supplier quotes for a PR; LEFT JOIN keeps rows visible even if the
+     *  supplier master is later soft-deleted. Rows carry pri_id so the modal
+     *  and print can merge quotes into their requested-item row. */
+    public function getSuppliersForPr(int $prId): array
+    {
+        $stmt = self::getConnection()->prepare(
+            "SELECT prs.id, prs.pri_id, prs.supplier_id, prs.price, prs.date_created, s.supplier_name, s.status AS supplier_status
+             FROM purchase_request_suppliers prs
+             LEFT JOIN suppliers s ON s.supplier_id = prs.supplier_id
+             WHERE prs.pr_id = :pr_id AND prs.remove = 0
+             ORDER BY prs.id ASC"
+        );
+        $stmt->execute(['pr_id' => $prId]);
+        return $stmt->fetchAll();
+    }
+
+    /** Replace all quotes for a PR (delete + insert) in one transaction.
+     *  Each row: pri_id (line item), supplier_id, price. */
+    public function replaceSuppliers(int $prId, array $rows, ?int $userId): void
+    {
+        $pdo = self::getConnection();
+        $pdo->beginTransaction();
+        try {
+            $pdo->prepare('DELETE FROM purchase_request_suppliers WHERE pr_id = :pr_id')
+                ->execute(['pr_id' => $prId]);
+            $stmt = $pdo->prepare(
+                "INSERT INTO purchase_request_suppliers (pr_id, pri_id, supplier_id, price, created_by)
+                 VALUES (:pr_id, :pri_id, :supplier_id, :price, :created_by)"
+            );
+            foreach ($rows as $row) {
+                $stmt->execute([
+                    'pr_id'       => $prId,
+                    'pri_id'      => (int) $row['pri_id'],
+                    'supplier_id' => (int) $row['supplier_id'],
+                    'price'       => round((float) $row['price'], 2),
+                    'created_by'  => $userId,
+                ]);
+            }
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
+    }
+
+    /** Procurement submitted quotes: pending -> submitted. Returns true when a
+     *  row actually changed (only the pending transition is allowed). */
+    public function markSubmitted(int $prId): bool
+    {
+        $stmt = self::getConnection()->prepare(
+            "UPDATE purchase_requests SET status = 'submitted'
+             WHERE pr_id = :pr_id AND remove = 0 AND status = 'pending'"
+        );
+        $stmt->execute(['pr_id' => $prId]);
+        return $stmt->rowCount() > 0;
+    }
+
     /** Create header + line items in one transaction. Returns new pr_id. */
     public function createRequest(array $header, array $items): int
     {
@@ -104,7 +163,7 @@ class PurchaseRequestModel extends BaseModel
                      status, prepared_by, checked_by, approved_by_name, received_by, notes, created_by)
                  VALUES
                     (:pr_number, :department, :purpose, :date_created, :classification, :priority,
-                     'submitted', :prepared_by, :checked_by, :approved_by_name, :received_by, :notes, :created_by)"
+                     'pending', :prepared_by, :checked_by, :approved_by_name, :received_by, :notes, :created_by)"
             );
             $stmt->execute($header);
             $prId = (int) $pdo->lastInsertId();

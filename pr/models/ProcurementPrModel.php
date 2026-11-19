@@ -62,7 +62,9 @@ class ProcurementPrModel extends BaseModel
         $stmt = self::getConnection()->prepare(
             "SELECT * FROM procurement_prs WHERE remove = 0 AND prf_id IN ($in)"
         );
-        $stmt->execute(array_map('intval', $prfIds));
+        // array_values: sparse input keys (e.g. from array_filter) break PDO's
+        // positional ? binding with HY093 — always pass a 0-based list.
+        $stmt->execute(array_values(array_map('intval', $prfIds)));
         foreach ($stmt->fetchAll() as $row) {
             $map[(int) $row['prf_id']] = $row;
         }
