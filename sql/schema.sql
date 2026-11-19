@@ -1,5 +1,5 @@
 -- Manufacturing Management System Database Schema
--- Generated from the live `manufacturing_mgmt` database on 2026-11-13 (MariaDB 10.4.32).
+-- Generated from the live `manufacturing_mgmt` database on 2026-11-19 (MariaDB 10.4.32).
 -- Regenerate with:
 --   mysqldump -u root --no-data --skip-add-drop-table --routines=FALSE --triggers=FALSE manufacturing_mgmt
 -- Normalized for repo use: CREATE TABLE IF NOT EXISTS, AUTO_INCREMENT counters stripped,
@@ -925,6 +925,32 @@ CREATE TABLE IF NOT EXISTS `purchase_request_items` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Table structure for table `purchase_request_suppliers`
+--
+
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE IF NOT EXISTS `purchase_request_suppliers` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `pr_id` int(10) unsigned NOT NULL,
+  `pri_id` int(10) unsigned DEFAULT NULL,
+  `supplier_id` int(11) NOT NULL,
+  `price` decimal(15,2) NOT NULL DEFAULT 0.00,
+  `created_by` int(11) DEFAULT NULL,
+  `date_created` datetime DEFAULT current_timestamp(),
+  `remove` tinyint(1) DEFAULT 0 COMMENT '0=active, 1=soft deleted',
+  `last_update` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_prs_pr` (`pr_id`),
+  KEY `fk_prs_supplier` (`supplier_id`),
+  KEY `idx_prs_pri` (`pri_id`),
+  CONSTRAINT `fk_prs_pr` FOREIGN KEY (`pr_id`) REFERENCES `purchase_requests` (`pr_id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_prs_pri` FOREIGN KEY (`pri_id`) REFERENCES `purchase_request_items` (`pri_id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_prs_supplier` FOREIGN KEY (`supplier_id`) REFERENCES `suppliers` (`supplier_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
 -- Table structure for table `purchase_requests`
 --
 
@@ -938,7 +964,7 @@ CREATE TABLE IF NOT EXISTS `purchase_requests` (
   `date_created` date NOT NULL,
   `classification` enum('new','repeat_order') NOT NULL DEFAULT 'new',
   `priority` enum('immediate','standard') NOT NULL DEFAULT 'standard',
-  `status` enum('submitted','approved','in_process') NOT NULL DEFAULT 'submitted',
+  `status` enum('pending','submitted','approved','in_process') NOT NULL DEFAULT 'pending',
   `prepared_by` varchar(120) DEFAULT NULL,
   `checked_by` varchar(120) DEFAULT NULL,
   `approved_by_name` varchar(120) DEFAULT NULL,
@@ -1375,5 +1401,5 @@ SET character_set_client = @saved_cs_client;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2026-11-16 17:36:34
+-- Dump completed on 2026-11-19 16:08:14
 
