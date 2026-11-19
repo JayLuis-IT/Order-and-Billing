@@ -38,9 +38,9 @@ class RndController {
         $this->boms();
     }
 
-    // ─── Raw Materials Management ─────────────────────────────────────────────
+    // â”€â”€â”€ Raw Materials Management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    // ─── Raw Materials (Deprecated — use Warehouse Items module) ─────────────
+    // â”€â”€â”€ Raw Materials (Deprecated â€” use Warehouse Items module) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     public function rawMaterials() {
         $_SESSION['error'] = 'Items (RM PM FG) are now managed under Warehouse.';
@@ -55,7 +55,7 @@ class RndController {
     public function rawMaterialImportPreview() { $this->rawMaterials(); }
     public function rawMaterialImportConfirm() { $this->rawMaterials(); }
 
-    // ─── BOM Management ──────────────────────────────────────────────────────
+    // â”€â”€â”€ BOM Management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     public function boms() {
         $search = $_GET['search'] ?? '';
@@ -79,7 +79,7 @@ class RndController {
         }
         $data['search'] = $search;
         $data['allItems'] = $this->itemModel->getAll(false);
-        // Active BOM count per FG/SFG — drives the "Existing BOM" badge in the
+        // Active BOM count per FG/SFG â€” drives the "Existing BOM" badge in the
         // Create New BOM dropdown (complete, unlike a page slice of $boms).
         $data['itemBomCounts'] = $this->bomModel->getItemBomCounts();
         $conn = \App\Core\BaseModel::getConnection();
@@ -388,7 +388,7 @@ class RndController {
         exit;
     }
 
-    // ─── Bulk Import: BOM Components ─────────────────────────────────────────────
+    // â”€â”€â”€ Bulk Import: BOM Components â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     public function bomImportPreview() {
         if ($_SERVER['REQUEST_METHOD'] !== 'POST' || empty($_FILES['import_file'])) {
@@ -540,7 +540,7 @@ class RndController {
                     );
                     $bomsUpdated++;
                 } else {
-                    // Imported recipes are not fill-volume based → legacy formula
+                    // Imported recipes are not fill-volume based â†’ legacy formula
                     $bomId = $this->bomModel->create($first['fg_item_id'], $first['bom_code'], 1.0, 'PCS', 1000, true);
                     $bomsCreated++;
                 }
@@ -578,9 +578,12 @@ class RndController {
         if ($page < 1) $page = 1;
         $perPage = 20;
 
+        // R&D list + type filter never include SUPPLIES
+        if ($typeFilter === 'SUPPLIES') $typeFilter = '';
         $filters = [];
         if ($search !== '') $filters['search'] = $search;
         if ($typeFilter !== '' && $typeFilter !== 'All Types') $filters['item_type'] = $typeFilter;
+        $filters['exclude_supplies'] = true;
 
         $total = $this->itemImportModel->countWithStock($filters);
         $totalPages = max(1, (int)ceil($total / $perPage));
@@ -595,12 +598,139 @@ class RndController {
         $data['typeFilter'] = $typeFilter;
         $data['canEdit'] = false;
         $data['canEditItem'] = true;
+        // R&D can create items â€” but never SUPPLIES-type ones (see storeItem)
+        $data['canAddItem'] = true;
         $data['itemsController'] = 'rnd';
         // Supplier dropdown for the edit modal (all non-deleted; inactive
         // labeled in the view so an existing link is never silently dropped).
         $data['suppliers'] = $this->supplierModel->getAll(false);
         $data['page_title'] = 'Item Master List';
         $this->renderWarehouse('items/index', $data);
+    }
+
+    // â”€â”€â”€ Create Item (Add Item modal â€” shared view, R&D copy) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    public function storeItem() {
+        $back = '?controller=rnd&action=items';
+        $qs = [];
+        foreach (['back_search' => 'search', 'back_type' => 'item_type', 'back_page' => 'page'] as $get => $out) {
+            $val = trim($_GET[$get] ?? '');
+            if ($val !== '' && $val !== '0') {
+                $qs[$out] = $val;
+            }
+        }
+        if ($qs) $back .= '&' . http_build_query($qs);
+
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            header('Location: ' . $back);
+            exit;
+        }
+        if (($_SESSION['department'] ?? '') !== 'rnd') {
+            $_SESSION['error'] = 'Unauthorized access';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        $code = trim($_POST['code'] ?? '');
+        $description = trim($_POST['description'] ?? '');
+        $type = strtoupper(trim($_POST['type'] ?? ''));
+        $uom = trim($_POST['uom'] ?? '');
+        $supIds = isset($_POST['suppliers']) && is_array($_POST['suppliers']) ? $_POST['suppliers'] : [];
+        $supPrices = isset($_POST['prices']) && is_array($_POST['prices']) ? $_POST['prices'] : [];
+        $defaultRaw = trim($_POST['default_supplier_id'] ?? '');
+
+        if ($code === '' || $description === '' || $uom === '') {
+            $_SESSION['error'] = 'Item code, description and UOM are required.';
+            header('Location: ' . $back);
+            exit;
+        }
+        // R&D never creates SUPPLIES-type items
+        if (!in_array($type, ['RM', 'PM', 'FG', 'SFG'], true)) {
+            $_SESSION['error'] = 'Invalid item type.';
+            header('Location: ' . $back);
+            exit;
+        }
+
+        // Validate the supplier/price pairs before creating anything
+        $supRows = [];
+        $supErr = null;
+        if (count($supIds) !== count($supPrices)) {
+            $supErr = 'Supplier/price list mismatch. Please try again.';
+        } else {
+            foreach ($supIds as $i => $sid) {
+                $sid = (int)$sid;
+                $price = trim((string)($supPrices[$i] ?? ''));
+                if ($sid <= 0 || !$this->supplierModel->getById($sid)) {
+                    $supErr = 'Supplier not found.';
+                    break;
+                }
+                if ($price === '' || !is_numeric($price) || (float)$price < 0) {
+                    $supErr = 'Every supplier needs a valid price (0 or more).';
+                    break;
+                }
+                if (isset($supRows[$sid])) {
+                    $supErr = 'Duplicate supplier in the list.';
+                    break;
+                }
+                $supRows[$sid] = round((float)$price, 2);
+            }
+        }
+        if ($supErr !== null) {
+            $_SESSION['error'] = $supErr;
+            header('Location: ' . $back);
+            exit;
+        }
+
+        // Default = most recently added (last) unless an explicit valid choice was posted
+        $defaultId = null;
+        if ($supRows) {
+            $keys = array_keys($supRows);
+            $defaultId = (int)end($keys);
+            if ($defaultRaw !== '' && isset($supRows[(int)$defaultRaw])) {
+                $defaultId = (int)$defaultRaw;
+            }
+        }
+
+        try {
+            $itemId = $this->itemImportModel->createItem([
+                'item_code' => $code,
+                'item_description' => $description,
+                'item_type' => $type,
+                'item_uom' => $uom,
+                'supplier_id' => $defaultId
+            ]);
+            $today = date('Y-m-d');
+            foreach ($supRows as $sid => $price) {
+                $this->itemImportModel->addPrice([
+                    'item_id' => $itemId,
+                    'supplier_id' => $sid,
+                    'price' => $price,
+                    'effective_date' => $today,
+                    'remarks' => 'Initial price (item creation)',
+                    'created_by' => $_SESSION['user_id'] ?? null
+                ]);
+            }
+            if ($supRows) {
+                $this->itemImportModel->syncItemAmount($itemId);
+            }
+        } catch (\Exception $e) {
+            $_SESSION['error'] = $e->getMessage();
+            header('Location: ' . $back);
+            exit;
+        }
+
+        AuditModel::log($_SESSION['user_id'], 'CREATE', 'rnd', "Item created: {$code} ({$type})", null, [
+            'item_code' => $code,
+            'item_description' => $description,
+            'item_type' => $type,
+            'item_uom' => $uom,
+            'supplier_id' => $defaultId,
+            'supplier_prices' => $supRows
+        ], 'item', (int)$itemId);
+
+        $_SESSION['success'] = 'Item created successfully!';
+        header('Location: ' . $back);
+        exit;
     }
 
     public function itemUpdate() {
@@ -635,7 +765,7 @@ class RndController {
             header('Location: ' . $back);
             exit;
         }
-        if (!in_array($type, ['RM', 'PM', 'FG', 'SFG', 'SUPPLIES'], true)) {
+        if (!in_array($type, ['RM', 'PM', 'FG', 'SFG'], true)) {
             $_SESSION['error'] = 'Invalid item type.';
             header('Location: ' . $back);
             exit;
@@ -654,7 +784,9 @@ class RndController {
 
         $priceRaw = trim($_POST['item_amount'] ?? '');
         if ($priceRaw === '') {
-            $price = 0.0;
+            // Field removed from the edit modal — the current price is owned by
+            // the supplier price history, so keep the stored value untouched.
+            $price = (float)($item['item_amount'] ?? 0);
         } elseif (!is_numeric($priceRaw) || (float)$priceRaw < 0) {
             $_SESSION['error'] = 'Price must be a number greater than or equal to 0.';
             header('Location: ' . $back);
@@ -670,6 +802,8 @@ class RndController {
             'supplier_id' => $supplierId,
             'item_amount' => $price
         ]);
+        // Price follows the newly saved default supplier's latest entry.
+        $this->itemImportModel->syncItemAmount($itemId);
 
         AuditModel::log(
             $_SESSION['user_id'],
@@ -689,7 +823,7 @@ class RndController {
         exit;
     }
 
-    // ─── Item price history (multi-supplier, dated) — AJAX for the edit modal ─
+    // â”€â”€â”€ Item price history (multi-supplier, dated) â€” AJAX for the edit modal â”€
 
     /** JSON payload behind the edit modal's Suppliers & Prices panes. */
     public function getItemSuppliersPrices() {
@@ -762,7 +896,7 @@ class RndController {
 
         $supplierId = (int)($_POST['supplier_id'] ?? 0);
         $priceRaw = trim($_POST['price'] ?? '');
-        // Date is optional in the modal (field removed) — stamp today server-side.
+        // Date is optional in the modal (field removed) â€” stamp today server-side.
         $date = trim($_POST['effective_date'] ?? '') ?: date('Y-m-d');
         $remarks = trim($_POST['remarks'] ?? '') ?: null;
 
@@ -792,7 +926,7 @@ class RndController {
         $this->itemImportModel->syncItemAmount($itemId);
 
         AuditModel::log($_SESSION['user_id'], 'CREATE', 'rnd',
-            "Price added for {$item['item_code']}: ₱" . number_format($price, 2) . " @ {$date}",
+            "Price added for {$item['item_code']}: â‚±" . number_format($price, 2) . " @ {$date}",
             null,
             ['supplier_id' => $supplierId, 'price' => $price, 'effective_date' => $date, 'remarks' => $remarks],
             'item_price', $priceId);
@@ -867,7 +1001,7 @@ class RndController {
     public function itemImportPreview() { $this->itemImportForm(); }
     public function itemImportConfirm() { $this->itemImportForm(); }
 
-    // ─── Suppliers (Supplier Management) ─────────────────────────────────────
+    // â”€â”€â”€ Suppliers (Supplier Management) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /** Redirect target that keeps the supplier list's search/page. The add/edit
      *  forms carry these as a query string on their action URL. */
@@ -1038,9 +1172,7 @@ class RndController {
         exit;
     }
 
-    // ─── Helpers ──────────────────────────────────────────────────────────────
-
-    private function getDbErrorMessage(\PDOException $e, $indexName, $fieldLabel) {
+private function getDbErrorMessage(\PDOException $e, $indexName, $fieldLabel) {
         $errorCode = $e->errorInfo[1] ?? null;
         $errorMessage = $e->getMessage();
         if ($errorCode === 1062) {

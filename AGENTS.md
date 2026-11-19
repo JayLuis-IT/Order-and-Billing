@@ -62,6 +62,13 @@ uploads/       - Receipt files (finance module)
 - Install admin: `php install-admin.php` (creates admin/admin user)
 - Key tables: users, customers, items, inventory_balances, purchase_orders, purchase_order_items, deliveries, supplier_orders, mrp_runs, mrp_run_items, delivery_receipts, production_history
 
+## Git Commit & Push Rules
+- Before running `git commit` or `git push`:
+  1. Check if any database tables, columns, or views were added or modified during the session.
+  2. If database changes occurred, generate a timestamped `.sql` migration file inside `sql/pending/` (e.g., `YYYY_MM_DD_HHMMSS_description.sql`) containing the exact `CREATE TABLE` or `ALTER TABLE` statements, and regenerate `sql/schema.sql` using the command in its file header.
+  3. Always stage and commit the `sql/` directory (including `sql/pending/`, `sql/applied/`, and `sql/schema.sql`) alongside any modified PHP files so the team's database schema stays synced on pull.
+- When pulling updates (`git pull`), always check `sql/pending/` for new files and remind the user to run `php sql/run_pending.php` (or open `http://localhost/order-billing-system/sql/run_pending.php`).
+
 ## Key Gotchas
 - Hardcoded absolute paths in autoloader (`C:\xampp\htdocs\order-billing-system\...`) — won't work outside XAMPP default install
 - `URL_ROOT` hardcoded to `http://localhost/order-billing-system/`

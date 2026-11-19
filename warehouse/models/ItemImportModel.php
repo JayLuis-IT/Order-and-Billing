@@ -20,14 +20,15 @@ class ItemImportModel extends BaseModel {
 
         $conn = self::getConnection();
         $sql = "INSERT INTO {$this->table}
-                (item_code, item_description, item_type, item_uom, status, `remove`)
-                VALUES (:item_code, :item_description, :item_type, :item_uom, 1, 0)";
+                (item_code, item_description, item_type, item_uom, supplier_id, status, `remove`)
+                VALUES (:item_code, :item_description, :item_type, :item_uom, :supplier_id, 1, 0)";
         $stmt = $conn->prepare($sql);
         $stmt->execute([
             'item_code' => $data['item_code'],
             'item_description' => $data['item_description'],
             'item_type' => $data['item_type'],
-            'item_uom' => $data['item_uom']
+            'item_uom' => $data['item_uom'],
+            'supplier_id' => !empty($data['supplier_id']) ? (int)$data['supplier_id'] : null
         ]);
         $itemId = $conn->lastInsertId();
 
@@ -219,12 +220,20 @@ class ItemImportModel extends BaseModel {
         return $stmt->rowCount() > 0 ? (int)$itemId : null;
     }
 
-    /** items.item_amount = latest active price row (feeds PO pricing /
-     *  price list). When no rows remain the current value is left alone
-     *  so deleting history never zeroes out PO pricing. */
+    /** items.item_amount = the item's default (primary) supplier's latest
+     *  active price row — the table's Price column and PO pricing follow the
+     *  supplier set as Default in the item edit modal. When the default
+     *  supplier has no price rows (or no default is set) the most recent
+     *  price across suppliers is used, and with no rows at all the current
+     *  value is left alone so deleting history never zeroes out PO pricing. */
     public function syncItemAmount($itemId) {
         $sql = "UPDATE items i
                 SET i.item_amount = COALESCE(
+                    (SELECT price FROM item_supplier_prices p
+                     WHERE p.item_id = i.item_id AND p.remove = 0
+                       AND p.supplier_id = i.supplier_id
+                     ORDER BY p.effective_date DESC, p.id DESC
+                     LIMIT 1),
                     (SELECT price FROM item_supplier_prices p
                      WHERE p.item_id = i.item_id AND p.remove = 0
                      ORDER BY p.effective_date DESC, p.id DESC
@@ -271,6 +280,10 @@ class ItemImportModel extends BaseModel {
         if (!empty($filters['item_type'])) {
             $sql .= " AND v.item_type = :item_type";
             $params['item_type'] = $filters['item_type'];
+        }
+        // R&D module never sees SUPPLIES-type items
+        if (!empty($filters['exclude_supplies'])) {
+            $sql .= " AND v.item_type <> 'SUPPLIES'";
         }
 
         return [$sql, $params];

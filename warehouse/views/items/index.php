@@ -1,8 +1,15 @@
-<?php $hasActionsCol = ($canEdit ?? false) || ($canEditItem ?? false); ?>
+<?php
+$hasActionsCol = ($canEdit ?? false) || ($canEditItem ?? false);
+// R&D module copy: never shows SUPPLIES anywhere (list filter, add/edit type options)
+$isRnd = (($itemsController ?? 'warehouse') === 'rnd');
+$canAddItem = ($canEdit ?? false) || ($canAddItem ?? false);
+?>
 <div class="d-flex justify-content-between mb-4">
     <div class="d-flex gap-2">
         <?php if ($canEdit ?? false): ?>
         <a href="?controller=warehouse&action=itemImportForm" class="btn btn-success"><i class="bi bi-upload me-1"></i>Import ERIC Items</a>
+        <?php endif; ?>
+        <?php if ($canAddItem): ?>
         <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addItemModal">
             <i class="bi bi-plus-lg me-1"></i> Add Item
         </button>
@@ -18,7 +25,7 @@
             <option value="PM" <?= ($typeFilter ?? '') === 'PM' ? 'selected' : '' ?>>Packaging</option>
             <option value="FG" <?= ($typeFilter ?? '') === 'FG' ? 'selected' : '' ?>>Finished Good</option>
             <option value="SFG" <?= ($typeFilter ?? '') === 'SFG' ? 'selected' : '' ?>>SFG - Semi-Finished Goods (Bulk)</option>
-            <option value="SUPPLIES" <?= ($typeFilter ?? '') === 'SUPPLIES' ? 'selected' : '' ?>>Supplies</option>
+            <?php if (!$isRnd): ?><option value="SUPPLIES" <?= ($typeFilter ?? '') === 'SUPPLIES' ? 'selected' : '' ?>>Supplies</option><?php endif; ?>
         </select>
         <button type="submit" class="d-none">Search</button>
     </form>
@@ -140,11 +147,11 @@
 </nav>
 <?php endif; ?>
 
-<?php if ($canEdit ?? false): ?>
+<?php if ($canAddItem): ?>
 <!-- ADD ITEM MODAL -->
 <div class="modal fade" id="addItemModal" tabindex="-1" aria-labelledby="addItemModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
-        <form class="modal-content" method="POST" action="?controller=warehouse&action=storeItem">
+        <form class="modal-content" method="POST" action="?controller=<?= htmlspecialchars($itemsController ?? 'warehouse') ?>&action=storeItem">
             <div class="modal-header">
                 <h5 class="modal-title" id="addItemModalLabel"><i class="bi bi-plus-lg me-2"></i>Add Item</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -167,7 +174,7 @@
                             <option value="PM">PM - Packaging</option>
                             <option value="FG">FG - Finished Good</option>
                             <option value="SFG">SFG - Semi-Finished Good</option>
-                            <option value="SUPPLIES">SUPPLIES</option>
+                            <?php if (!$isRnd): ?><option value="SUPPLIES">SUPPLIES</option><?php endif; ?>
                         </select>
                     </div>
                     <div class="col-md-6 mb-3">
@@ -185,11 +192,43 @@
                         </datalist>
                     </div>
                 </div>
+                <?php if ($isRnd): ?>
+                <hr>
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h6 class="mb-0"><i class="bi bi-truck me-1"></i>Suppliers</h6>
+                </div>
+                <div class="row g-2 mb-2">
+                    <div class="col-md-7">
+                        <select class="form-select" id="aiSupSelect">
+                            <option value="">Select supplier...</option>
+                            <?php foreach (($suppliers ?? []) as $sup): ?>
+                            <option value="<?= (int)$sup['supplier_id'] ?>"><?= htmlspecialchars($sup['supplier_name']) ?><?= $sup['status'] ? '' : ' (inactive)' ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <input type="number" class="form-control" id="aiSupPrice" step="0.01" min="0" placeholder="Price">
+                    </div>
+                    <div class="col-md-2 d-grid">
+                        <button type="button" class="btn btn-sm btn-success" id="aiSupAdd"><i class="bi bi-plus-lg me-1"></i>Add</button>
+                    </div>
+                </div>
+                <div class="text-danger small mb-2 d-none" id="aiSupError"></div>
+                <div class="table-responsive" style="max-height:200px; overflow-y:auto;">
+                    <table class="table table-sm table-hover align-middle mb-0">
+                        <thead class="table-light"><tr><th>Supplier</th><th class="text-end">Price</th><th class="text-center">Default</th></tr></thead>
+                        <tbody id="aiSupBody"></tbody>
+                    </table>
+                </div>
+                <div class="text-muted small mt-1" id="aiSupEmpty">No suppliers yet — add a supplier with its price. The most recently added supplier is the default.</div>
+                <div id="aiSupHidden"></div>
+                <?php else: ?>
                 <div class="mb-1">
                     <label for="addItemSoh" class="form-label">Initial SOH</label>
                     <input type="number" class="form-control" id="addItemSoh" name="soh" step="0.0001" min="0" value="0.0000">
                     <small class="text-muted">Status is derived automatically: IN STOCK when SOH &gt; 0, OUT OF STOCK when 0.</small>
                 </div>
+                <?php endif; ?>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -198,7 +237,105 @@
         </form>
     </div>
 </div>
+<?php if ($isRnd): ?>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var added = [];
+    var select = document.getElementById('aiSupSelect');
+    var priceInput = document.getElementById('aiSupPrice');
+    var addBtn = document.getElementById('aiSupAdd');
+    var body = document.getElementById('aiSupBody');
+    var emptyMsg = document.getElementById('aiSupEmpty');
+    var errBox = document.getElementById('aiSupError');
+    var hiddenBox = document.getElementById('aiSupHidden');
 
+    function showErr(msg) {
+        errBox.textContent = msg;
+        errBox.classList.remove('d-none');
+    }
+    function clearErr() {
+        errBox.textContent = '';
+        errBox.classList.add('d-none');
+    }
+    function supplierName(id) {
+        var opt = select.querySelector('option[value="' + id + '"]');
+        return opt ? opt.textContent : ('Supplier #' + id);
+    }
+    function syncHidden() {
+        hiddenBox.innerHTML = '';
+        var mk = function(name, val) {
+            var i = document.createElement('input');
+            i.type = 'hidden'; i.name = name; i.value = val;
+            hiddenBox.appendChild(i);
+        };
+        added.forEach(function(row) {
+            mk('suppliers[]', row.id);
+            mk('prices[]', row.price);
+        });
+        if (added.length) mk('default_supplier_id', added[added.length - 1].id);
+    }
+    function render() {
+        body.innerHTML = '';
+        emptyMsg.classList.toggle('d-none', added.length > 0);
+        added.forEach(function(row, idx) {
+            var isDefault = idx === added.length - 1;
+            var tr = document.createElement('tr');
+            var tdName = document.createElement('td');
+            tdName.textContent = row.name;
+            var tdPrice = document.createElement('td');
+            tdPrice.className = 'text-end';
+            tdPrice.textContent = '₱' + Number(row.price).toFixed(2);
+            var tdDef = document.createElement('td');
+            tdDef.className = 'text-center';
+            if (isDefault) {
+                var badge = document.createElement('span');
+                badge.className = 'badge bg-success';
+                badge.textContent = 'Default';
+                tdDef.appendChild(badge);
+            } else {
+                var btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'btn btn-link btn-sm p-0';
+                btn.textContent = 'Make default';
+                btn.addEventListener('click', function() {
+                    var moved = added.splice(idx, 1);
+                    added.push(moved[0]);
+                    render(); syncHidden();
+                });
+                tdDef.appendChild(btn);
+            }
+            tr.appendChild(tdName); tr.appendChild(tdPrice); tr.appendChild(tdDef);
+            body.appendChild(tr);
+        });
+        syncHidden();
+    }
+    function reset() {
+        added = [];
+        select.value = '';
+        priceInput.value = '';
+        clearErr();
+        render();
+    }
+    addBtn.addEventListener('click', function() {
+        var id = select.value;
+        var price = parseFloat(priceInput.value);
+        if (!id) { showErr('Select a supplier.'); return; }
+        if (isNaN(price) || price < 0) { showErr('Enter a valid price (0 or more).'); return; }
+        if (added.some(function(r) { return r.id === id; })) { showErr('That supplier is already added.'); return; }
+        clearErr();
+        added.push({ id: id, name: supplierName(id), price: price.toFixed(2) });
+        select.value = '';
+        priceInput.value = '';
+        render();
+    });
+    var modal = document.getElementById('addItemModal');
+    if (modal) modal.addEventListener('hidden.bs.modal', reset);
+});
+</script>
+<?php endif; ?>
+<?php endif; ?>
+
+<?php if ($canEdit ?? false): ?>
 <!-- ADJUST SOH MODAL -->
 <div class="modal fade" id="adjustSohModal" tabindex="-1" aria-labelledby="adjustSohModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
@@ -276,7 +413,7 @@
                             <option value="PM">PM - Packaging</option>
                             <option value="FG">FG - Finished Good</option>
                             <option value="SFG">SFG - Semi-Finished Good</option>
-                            <option value="SUPPLIES">SUPPLIES</option>
+                            <?php if (!$isRnd): ?><option value="SUPPLIES">SUPPLIES</option><?php endif; ?>
                         </select>
                     </div>
                     <div class="col-md-4 mb-3">
@@ -292,11 +429,6 @@
                             <option value="CS"></option>
                             <option value="Ltr"></option>
                         </datalist>
-                    </div>
-                    <div class="col-md-4 mb-3">
-                        <label for="editItemPrice" class="form-label">Price (current)</label>
-                        <input type="number" class="form-control" id="editItemPrice" name="item_amount" step="0.01" min="0" value="0.00">
-                        <small class="text-muted">Manual override; re-syncs when prices below change.</small>
                     </div>
                 </div>
 
@@ -316,6 +448,9 @@
                                 <div class="col-12">
                                     <input type="number" class="form-control form-control-sm" id="apPrice" step="0.01" min="0" placeholder="Price">
                                 </div>
+                                <div class="col-12">
+                                    <input type="date" class="form-control form-control-sm" id="apDate">
+                                </div>
                                 <div class="col-12 d-grid">
                                     <button type="button" class="btn btn-sm btn-primary" id="apSave">Add Price</button>
                                 </div>
@@ -323,7 +458,7 @@
                         </div>
                         <div class="table-responsive" style="max-height:240px; overflow-y:auto;">
                             <table class="table table-sm table-hover align-middle mb-0">
-                                <thead class="table-light"><tr><th>Supplier</th><th class="text-end">Latest</th><th class="text-center">#</th></tr></thead>
+                                <thead class="table-light"><tr><th>Supplier</th><th class="text-end">Latest</th><th class="text-center">#</th><th class="text-center">Default</th></tr></thead>
                                 <tbody id="apSuppliersBody"></tbody>
                             </table>
                         </div>
@@ -332,10 +467,14 @@
                     </div>
                     <!-- RIGHT: selected supplier's dated price history -->
                     <div class="col-md-7">
-                        <h6 class="mb-2" id="apHistoryTitle">Price history</h6>
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <h6 class="mb-2 mb-md-0" id="apHistoryTitle">Price history</h6>
+                            <button type="button" class="btn btn-sm btn-primary" id="apSaveHeader" title="Add the price entry above to this supplier's history"><i class="bi bi-plus-lg me-1"></i>Add Price</button>
+                        </div>
+                        <small class="text-muted d-block mb-1">Previous prices stay listed with their dates — only the entry with the latest date is used as the current price.</small>
                         <div class="table-responsive" style="max-height:300px; overflow-y:auto;">
                             <table class="table table-sm align-middle mb-0">
-                                <thead class="table-light"><tr><th>Effective date</th><th class="text-end">Price</th></tr></thead>
+                                <thead class="table-light"><tr><th>Effective date</th><th class="text-end">Price</th><th class="text-center">Status</th></tr></thead>
                                 <tbody id="apPricesBody"></tbody>
                             </table>
                         </div>
@@ -359,6 +498,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const BASE = '?controller=' + itemsController + '&action=';
     let currentItemId = 0;
     let currentSupplierId = 0;
+    let defaultSupplierId = 0;
     let lastData = null;
     let loadSeq = 0;
 
@@ -369,20 +509,32 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // ── Panes ──────────────────────────────────────────────────────────────
+    function syncDefaultHidden() {
+        document.getElementById('editItemSupplierId').value = defaultSupplierId || '';
+    }
+
     function renderPanes(data) {
         var suppliers = (data && data.suppliers) || [];
         var ids = suppliers.map(function(s) { return s.supplier_id; });
         if (ids.indexOf(currentSupplierId) === -1) {
             currentSupplierId = ids.length ? ids[0] : 0;
         }
+        if (ids.indexOf(defaultSupplierId) === -1) {
+            defaultSupplierId = ids.length ? ids[0] : 0;
+        }
+        syncDefaultHidden();
 
         var supBody = document.getElementById('apSuppliersBody');
         supBody.innerHTML = suppliers.map(function(s) {
             var sel = s.supplier_id === currentSupplierId ? 'table-active' : '';
+            var defCell = s.supplier_id === defaultSupplierId
+                ? '<span class="badge bg-success">Default</span>'
+                : '<button type="button" class="btn btn-link btn-sm p-0 ap-make-default" data-supplier-id="' + s.supplier_id + '">Make default</button>';
             return '<tr class="' + sel + ' ap-sup-row" data-supplier-id="' + s.supplier_id + '" style="cursor:pointer">' +
                 '<td><strong>' + esc(s.supplier_name) + '</strong>' + (s.status === 0 ? ' <span class="badge bg-secondary">inactive</span>' : '') + '</td>' +
                 '<td class="text-end">₱' + Number(s.latest).toFixed(2) + '</td>' +
-                '<td class="text-center">' + s.count + '</td></tr>';
+                '<td class="text-center">' + s.count + '</td>' +
+                '<td class="text-center">' + defCell + '</td></tr>';
         }).join('');
         document.getElementById('apEmpty').style.display = suppliers.length ? 'none' : '';
         document.getElementById('apRemoveBtn').classList.toggle('d-none', !currentSupplierId);
@@ -404,10 +556,14 @@ document.addEventListener('DOMContentLoaded', function() {
             return;
         }
         empty.classList.add('d-none');
-        body.innerHTML = sup.prices.map(function(p) {
-            return '<tr>' +
+        body.innerHTML = sup.prices.map(function(p, idx) {
+            var badge = idx === 0
+                ? ' <span class="badge bg-success">Current</span>'
+                : ' <span class="badge bg-light text-dark border">Previous</span>';
+            return '<tr' + (idx === 0 ? ' class="table-success"' : '') + '>' +
                 '<td>' + esc(p.effective_date) + '</td>' +
                 '<td class="text-end"><strong>₱' + Number(p.price).toFixed(2) + '</strong></td>' +
+                '<td class="text-center">' + badge + '</td>' +
                 '</tr>';
         }).join('');
     }
@@ -445,6 +601,7 @@ document.addEventListener('DOMContentLoaded', function() {
     function openEditModal(btn) {
         currentItemId = parseInt(btn.dataset.itemId || '0', 10);
         currentSupplierId = 0;
+        defaultSupplierId = parseInt(btn.dataset.supplier || '0', 10);
         lastData = null;
         document.getElementById('editItemId').value = btn.dataset.itemId || '';
         document.getElementById('editItemCode').textContent = btn.dataset.code || '—';
@@ -452,9 +609,9 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('editItemType').value = btn.dataset.type || '';
         document.getElementById('editItemUom').value = btn.dataset.uom || '';
         document.getElementById('editItemSupplierId').value = btn.dataset.supplier || '';
-        document.getElementById('editItemPrice').value = btn.dataset.price || '0.00';
         document.getElementById('apForm').classList.add('d-none');
         document.getElementById('apPrice').value = '';
+        document.getElementById('apDate').value = '';
         document.getElementById('apSupplier').innerHTML = '<option value="">Select supplier...</option>';
         bootstrap.Modal.getOrCreateInstance(editModalEl).show();
         loadSuppliersPrices();
@@ -469,6 +626,14 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Supplier row → select + re-render right pane
     document.getElementById('apSuppliersBody').addEventListener('click', function(e) {
+        var mk = e.target.closest('.ap-make-default');
+        if (mk) {
+            e.stopPropagation();
+            defaultSupplierId = parseInt(mk.dataset.supplierId, 10);
+            syncDefaultHidden();
+            renderPanes(lastData || { suppliers: [] });
+            return;
+        }
         var row = e.target.closest('.ap-sup-row');
         if (!row) return;
         currentSupplierId = parseInt(row.dataset.supplierId, 10);
@@ -479,29 +644,54 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('apToggle').addEventListener('click', function() {
         var f = document.getElementById('apForm');
         f.classList.toggle('d-none');
-        if (!f.classList.contains('d-none')) document.getElementById('apSupplier').focus();
+        if (!f.classList.contains('d-none')) {
+            var d = document.getElementById('apDate');
+            if (!d.value) d.value = new Date().toISOString().slice(0, 10);
+            document.getElementById('apSupplier').focus();
+        }
     });
 
-    // Add price (supplier + first/next price in one step; date = today server-side)
-    document.getElementById('apSave').addEventListener('click', function() {
-        var supplierId = document.getElementById('apSupplier').value;
+    // Add price (supplier + first/next price in one step; date defaults to today)
+    // Both Add Price buttons (form + history header) share this handler.
+    function addPrice() {
+        // Use the Add-Supplier dropdown, else the currently selected supplier row
+        var supplierId = document.getElementById('apSupplier').value || String(currentSupplierId);
         var price = document.getElementById('apPrice').value;
-        if (!supplierId) { Dlg.alert('Please select a supplier.'); return; }
+        var date = document.getElementById('apDate').value;
+        if (!supplierId) { Dlg.alert('Click a supplier on the left first, then enter a price.'); return; }
         if (price === '' || isNaN(price) || parseFloat(price) < 0) { Dlg.alert('Valid price is required.'); return; }
-        var btn = this;
+        var btn = document.getElementById('apSaveHeader');
         btn.disabled = true;
         postJson('itemPriceAdd', {
             item_id: currentItemId,
             supplier_id: supplierId,
-            price: price
+            price: price,
+            effective_date: date
         }).then(function(res) {
             btn.disabled = false;
             if (!res.success) { Dlg.alert(res.error || 'Failed to add price.'); return; }
             currentSupplierId = parseInt(supplierId, 10);
+            // Most recently added supplier becomes the default (matches Add Item behavior)
+            defaultSupplierId = parseInt(supplierId, 10);
             document.getElementById('apPrice').value = '';
+            document.getElementById('apDate').value = '';
             document.getElementById('apForm').classList.add('d-none');
             loadSuppliersPrices();
         }).catch(function() { btn.disabled = false; Dlg.alert('Failed to add price.'); });
+    }
+    document.getElementById('apSave').addEventListener('click', addPrice);
+    document.getElementById('apSaveHeader').addEventListener('click', function() {
+        var form = document.getElementById('apForm');
+        var sel = document.getElementById('apSupplier');
+        if (form.classList.contains('d-none')) {
+            form.classList.remove('d-none');
+            if (currentSupplierId) sel.value = String(currentSupplierId);
+            var d = document.getElementById('apDate');
+            if (!d.value) d.value = new Date().toISOString().slice(0, 10);
+            document.getElementById('apPrice').focus();
+            return;
+        }
+        addPrice();
     });
 
     // Delete Supplier → removes all of its price rows for this item

@@ -3895,7 +3895,9 @@ class WarehouseController {
 
         $priceRaw = trim($_POST['item_amount'] ?? '');
         if ($priceRaw === '') {
-            $price = 0.0;
+            // Field removed from the edit modal — the current price is owned by
+            // the supplier price history, so keep the stored value untouched.
+            $price = (float)($item['item_amount'] ?? 0);
         } elseif (!is_numeric($priceRaw) || (float)$priceRaw < 0) {
             $_SESSION['error'] = 'Price must be a number greater than or equal to 0.';
             header('Location: ' . $back);
@@ -3911,6 +3913,8 @@ class WarehouseController {
             'supplier_id' => $supplierId,
             'item_amount' => $price
         ]);
+        // Price follows the newly saved default supplier's latest entry.
+        $this->itemImportModel->syncItemAmount($itemId);
 
         AuditModel::log(
             $_SESSION['user_id'],

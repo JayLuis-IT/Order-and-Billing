@@ -35,7 +35,7 @@ class AdminController {
         }
         $action = $_GET['action'] ?? '';
         // Stale/corrupted session (user_id set but department missing) would
-        // ping-pong between here and homeUrl() forever — force a clean logout.
+        // ping-pong between here and homeUrl() forever â€” force a clean logout.
         if (($_SESSION['department'] ?? '') === '') {
             header('Location: ?controller=auth&action=logout');
             exit;
@@ -461,7 +461,7 @@ class AdminController {
         exit;
     }
 
-    // ─── Suppliers (Supplier Management) ─────────────────────────────────────
+    // â”€â”€â”€ Suppliers (Supplier Management) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /** Redirect target that keeps the supplier list's search/page. The add/edit
      *  forms carry these as a query string on their action URL. */
@@ -1166,7 +1166,7 @@ public function deleteProductionHistory() {
         $this->render('activity_logs/index', $data);
     }
 
-    // ─── Users & Approver toggle (MRP dual-approval gate) ──────────────────────
+    // â”€â”€â”€ Users & Approver toggle (MRP dual-approval gate) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     public function users() {
         $auditModel = new AuditModel();
@@ -1354,7 +1354,7 @@ public function deleteProductionHistory() {
             if (!is_array($lotItems) || count($lotItems) === 0) {
                 $lotItems = [[
                     'item_description' => $d['item_description'] ?? 'Unknown',
-                    'lot_number' => $d['lot_number'] ?? '—',
+                    'lot_number' => $d['lot_number'] ?? 'â€”',
                     'qty' => $d['delivery_quantity'] ?? 0,
                     'actual_uom_conversion' => $d['actual_uom_conversion'] ?? null,
                     'uom_conversion' => $d['uom_conversion'] ?? null,
@@ -1556,7 +1556,7 @@ public function deleteProductionHistory() {
         $this->render('backloads/index', $data);
     }
 
-    // ─── Raw Materials Management ─────────────────────────────────────────────
+    // â”€â”€â”€ Raw Materials Management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     public function rawMaterials() {
         $search = $_GET['search'] ?? '';
@@ -1661,7 +1661,7 @@ public function deleteProductionHistory() {
         exit;
     }
 
-    // ─── BOM Management ──────────────────────────────────────────────────────
+    // â”€â”€â”€ BOM Management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     public function boms() {
         $search = $_GET['search'] ?? '';
@@ -1685,7 +1685,7 @@ public function deleteProductionHistory() {
         }
         $data['search'] = $search;
         $data['allItems'] = $this->itemModel->getAll(false);
-        // Active BOM count per FG/SFG — drives the "Existing BOM" badge in the
+        // Active BOM count per FG/SFG â€” drives the "Existing BOM" badge in the
         // Create New BOM dropdown (complete, unlike a page slice of $boms).
         $data['itemBomCounts'] = $this->bomModel->getItemBomCounts();
         $data['deliveryReportsCount'] = $this->warehouseModel->getDeliveryReportsCount();
@@ -1950,7 +1950,7 @@ public function deleteProductionHistory() {
         exit;
     }
 
-    // ─── Bulk Import: Raw Materials ────────────────────────────────────────────
+    // â”€â”€â”€ Bulk Import: Raw Materials â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     public function rawMaterialImportPreview() {
         if ($_SERVER['REQUEST_METHOD'] !== 'POST' || empty($_FILES['import_file'])) {
@@ -2072,7 +2072,7 @@ public function deleteProductionHistory() {
         exit;
     }
 
-    // ─── Bulk Import: BOM Components ─────────────────────────────────────────────
+    // â”€â”€â”€ Bulk Import: BOM Components â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     public function bomImportPreview() {
         if ($_SERVER['REQUEST_METHOD'] !== 'POST' || empty($_FILES['import_file'])) {
@@ -2222,7 +2222,7 @@ public function deleteProductionHistory() {
                     );
                     $bomsUpdated++;
                 } else {
-                    // Imported recipes are not fill-volume based → legacy formula
+                    // Imported recipes are not fill-volume based â†’ legacy formula
                     $bomId = $this->bomModel->create($first['fg_item_id'], $first['bom_code'], 1.0, 'PCS', 1000, true);
                     $bomsCreated++;
                 }
@@ -2251,7 +2251,7 @@ public function deleteProductionHistory() {
         exit;
     }
 
-    // ─── Purchasing PO / Receiving PO (View Only for Admin) ────────────────────
+    // â”€â”€â”€ Purchasing PO / Receiving PO (View Only for Admin) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     public function purchasingPo() {
         $filters = [
@@ -2268,7 +2268,7 @@ public function deleteProductionHistory() {
         $this->render('purchasingPo/index', $data);
     }
 
-    // ─── MRP dual-approval gate, step 2: System Admin approve/reject ──────────
+    // â”€â”€â”€ MRP dual-approval gate, step 2: System Admin approve/reject â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Rows arriving here have already passed Warehouse Admin approval
     // (status 'pending_sysadmin_approval'). Approve releases them to the
     // Purchasing PO module as 'requested'; reject cancels them with reason.
@@ -2282,23 +2282,23 @@ public function deleteProductionHistory() {
 
         $stageLabel = 'System Admin';
         $label = ($_SESSION['full_name'] ?? $_SESSION['username'] ?? 'unknown') . ' (' . ($_SESSION['department'] ?? '') . ')';
-        $audit = "MRP requisition approved at the {$stageLabel} stage — order #{$order['supplier_order_id']} item "
+        $audit = "MRP requisition approved at the {$stageLabel} stage â€” order #{$order['supplier_order_id']} item "
             . ($order['item_code'] ?? '') . ' qty ' . $order['quantity']
             . ($order['mrp_ref'] ? ' (' . $order['mrp_ref'] . ')' : '');
-        $rejectAudit = "MRP requisition rejected at the {$stageLabel} stage — order #{$order['supplier_order_id']} item "
+        $rejectAudit = "MRP requisition rejected at the {$stageLabel} stage â€” order #{$order['supplier_order_id']} item "
             . ($order['item_code'] ?? '') . ' qty ' . $order['quantity']
             . ($order['mrp_ref'] ? ' (' . $order['mrp_ref'] . ')' : '')
-            . ' — Reason: ' . ($reason !== '' ? $reason : 'not provided');
+            . ' â€” Reason: ' . ($reason !== '' ? $reason : 'not provided');
         if ($approve) {
-            // Final run gate (two-gate flow): release straight to Procurement —
+            // Final run gate (two-gate flow): release straight to Procurement â€”
             // QC Admin no longer gates requisitions; raw material inspection
             // happens at Receiving.
             $this->warehouseModel->approveMrpRequisition($id, 'pending_sysadmin_approval', 'requested', $stageLabel, $label);
-            $_SESSION['success'] = $audit . ' — released to Procurement.';
+            $_SESSION['success'] = $audit . ' â€” released to Procurement.';
             AuditModel::log($_SESSION['user_id'], 'APPROVE', 'warehouse', $audit,
                 ['status' => $order['status']], ['status' => 'requested'], 'supplier_order', $id);
             NotificationHelper::create('po', 'MRP Requisition Released to Procurement',
-                (string) $order['mrp_ref'] . ' — requisition for ' . $order['item_code'] . ' passed System Admin approval; Procurement can create the PO.',
+                (string) $order['mrp_ref'] . ' â€” requisition for ' . $order['item_code'] . ' passed System Admin approval; Procurement can create the PO.',
                 'warehouse', '?controller=warehouse&action=purchasingPo&tab=requested');
         } else {
             $this->warehouseModel->rejectMrpRequisition($id, 'pending_sysadmin_approval', $stageLabel, $reason, $label);
@@ -2306,13 +2306,13 @@ public function deleteProductionHistory() {
             AuditModel::log($_SESSION['user_id'], 'REJECT', 'warehouse', $rejectAudit,
                 ['status' => $order['status']], ['status' => 'cancelled'], 'supplier_order', $id);
             NotificationHelper::create('po', 'MRP Requisition Rejected',
-                (string) $order['mrp_ref'] . ' — requisition for ' . $order['item_code'] . ' was rejected at the ' . $stageLabel . ' stage.'
+                (string) $order['mrp_ref'] . ' â€” requisition for ' . $order['item_code'] . ' was rejected at the ' . $stageLabel . ' stage.'
                 . ($reason !== '' ? ' Reason: ' . $reason : ''),
                 'warehouse', '?controller=warehouse&action=purchasingPo&tab=approval');
         }
     }
 
-    // ─── Admin Approvals hub (System Admin) ───────────────────────────────────
+    // â”€â”€â”€ Admin Approvals hub (System Admin) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // One screen for everything awaiting a System Admin decision, not just MRP:
     //   1. MRP requisitions passed to the System Admin gate (per run)
     //   2. Purchasing PO drafts awaiting admin approval (pending_admin_approval)
@@ -2335,7 +2335,7 @@ public function deleteProductionHistory() {
         } catch (\Exception $e) {
             $overageRequests = [];
         }
-        // Decision history — MRP runs the System Admin decided, shown as
+        // Decision history â€” MRP runs the System Admin decided, shown as
         // run-level tracking (same table + review modal as the warehouse side).
         try {
             $decisionRuns = $this->warehouseModel->getMrpSysadminDecisionRuns(20);
@@ -2359,12 +2359,12 @@ public function deleteProductionHistory() {
         $this->render('approvals/index', $data);
     }
 
-    /** Legacy alias — the MRP-queue tab folded into the Approvals hub. */
+    /** Legacy alias â€” the MRP-queue tab folded into the Approvals hub. */
     public function mrpApproval() {
         $this->approvals();
     }
 
-    // ─── MRP run-level decision (per-run Approve All / Reject, System Admin) ──
+    // â”€â”€â”€ MRP run-level decision (per-run Approve All / Reject, System Admin) â”€â”€
 
   private function decideMrpRunRequest(bool $approve): void {
   $runId = intval($_POST['mrp_run_id'] ?? 0);
@@ -2372,9 +2372,9 @@ public function deleteProductionHistory() {
   $label = ($_SESSION['full_name'] ?? $_SESSION['username'] ?? 'unknown') . ' (' . ($_SESSION['department'] ?? '') . ')';
   $audit = "MRP run decided at the System Admin stage - run #{$runId}";
   if ($approve) {
-  // Two-gate flow: System Admin is the FINAL run gate — requisition runs
+  // Two-gate flow: System Admin is the FINAL run gate â€” requisition runs
   // release straight to Procurement; zero-lacking runs complete as approved.
-  // (QC Admin no longer gates runs — raw material inspection happens at Receiving.)
+  // (QC Admin no longer gates runs â€” raw material inspection happens at Receiving.)
   $runStatus = $this->warehouseModel->getMrpRunApprovalStatus($runId);
   $zeroLacking = !empty($runStatus);
   $targetStatus = $zeroLacking ? 'approved' : 'requested';
@@ -2396,16 +2396,16 @@ public function deleteProductionHistory() {
   } else {
             $reason = trim($_POST['reject_reason'] ?? '');
             $result = $this->warehouseModel->decideMrpRun($runId, 'pending_sysadmin_approval', 'cancelled', $label, $reason);
-            $_SESSION['success'] = 'MRP Run ' . ($result['mrp_ref'] ?: ('#' . $runId)) . ' rejected — '
+            $_SESSION['success'] = 'MRP Run ' . ($result['mrp_ref'] ?: ('#' . $runId)) . ' rejected â€” '
                 . (!empty($result['zero_lacking'])
                     ? 'no purchase requests were involved (nothing lacking).'
                     : $result['moved'] . ' requisition(s) cancelled.');
             AuditModel::log($_SESSION['user_id'], 'REJECT', 'warehouse', $audit
-                . ' (' . $result['mrp_ref'] . '), ' . $result['moved'] . ' requisition(s) cancelled — Reason: '
+                . ' (' . $result['mrp_ref'] . '), ' . $result['moved'] . ' requisition(s) cancelled â€” Reason: '
                 . ($reason !== '' ? $reason : 'not provided'),
                 null, ['status' => 'cancelled'], 'mrp_run', $runId);
             NotificationHelper::create('po', 'MRP Run Rejected',
-                ($result['mrp_ref'] ?: ('MRP run #' . $runId)) . ' — ' . $result['moved']
+                ($result['mrp_ref'] ?: ('MRP run #' . $runId)) . ' â€” ' . $result['moved']
                 . ' requisition(s) were rejected by System Admin. Reason: '
                 . ($reason !== '' ? $reason : 'not provided'),
                 'warehouse', '?controller=warehouse&action=mrpApproval');
@@ -2497,7 +2497,7 @@ public function deleteProductionHistory() {
         $this->render('receivingPo/index', $data);
     }
 
-    // ─── Purchasing PO Admin Approval Gate, step 1 of 2 (only approver here) ──
+    // â”€â”€â”€ Purchasing PO Admin Approval Gate, step 1 of 2 (only approver here) â”€â”€
     // Procurement-processed POs arrive as drafts (pending_admin_approval).
     // System Admin approval activates them for Receiving; no Warehouse Admin
     // step exists on this gate.
@@ -2514,14 +2514,14 @@ public function deleteProductionHistory() {
                 if (!$order) throw new \RuntimeException('Purchasing PO not found.');
                 $label = ($_SESSION['full_name'] ?? $_SESSION['username'] ?? 'unknown') . ' (' . ($_SESSION['department'] ?? '') . ')';
                 $this->warehouseModel->approvePurchaseOrderDraft($id, $label);
-                $audit = 'Processed PO draft approved — order #' . $id . ' item ' . ($order['item_code'] ?? '')
+                $audit = 'Processed PO draft approved â€” order #' . $id . ' item ' . ($order['item_code'] ?? '')
                     . ' qty ' . $order['quantity'] . ($order['mrp_ref'] ? ' (' . $order['mrp_ref'] . ')' : '')
-                    . ' — now Active for receiving.';
+                    . ' â€” now Active for receiving.';
                 $_SESSION['success'] = $audit;
                 AuditModel::log($_SESSION['user_id'], 'APPROVE', 'warehouse', $audit,
                     ['status' => $order['status']], ['status' => 'pending'], 'supplier_order', $id);
                 NotificationHelper::create('po', 'PO Approved for Receiving',
-                    ($order['po_ref'] ?: ('SO #' . $id)) . ' — PO for ' . $order['item_code'] . ' qty '
+                    ($order['po_ref'] ?: ('SO #' . $id)) . ' â€” PO for ' . $order['item_code'] . ' qty '
                     . $order['quantity'] . ' passed System Admin approval and is now Active for receiving.',
                     'warehouse', '?controller=warehouse&action=receivingPo');
             }
@@ -2545,13 +2545,13 @@ public function deleteProductionHistory() {
                 $reason = trim($_POST['reject_reason'] ?? '');
                 $label = ($_SESSION['full_name'] ?? $_SESSION['username'] ?? 'unknown') . ' (' . ($_SESSION['department'] ?? '') . ')';
                 $this->warehouseModel->rejectPurchaseOrderDraft($id, $reason, $label);
-                $audit = 'Processed PO draft rejected — order #' . $id . ' item ' . ($order['item_code'] ?? '')
-                    . ' qty ' . $order['quantity'] . ' — Reason: ' . ($reason !== '' ? $reason : 'not provided');
+                $audit = 'Processed PO draft rejected â€” order #' . $id . ' item ' . ($order['item_code'] ?? '')
+                    . ' qty ' . $order['quantity'] . ' â€” Reason: ' . ($reason !== '' ? $reason : 'not provided');
                 $_SESSION['success'] = $audit . ' (PO cancelled).';
                 AuditModel::log($_SESSION['user_id'], 'REJECT', 'warehouse', $audit,
                     ['status' => $order['status']], ['status' => 'cancelled'], 'supplier_order', $id);
                 NotificationHelper::create('po', 'PO Draft Rejected',
-                    ($order['po_ref'] ?: ('SO #' . $id)) . ' — PO draft for ' . $order['item_code']
+                    ($order['po_ref'] ?: ('SO #' . $id)) . ' â€” PO draft for ' . $order['item_code']
                     . ' was rejected by System Admin.' . ($reason !== '' ? ' Reason: ' . $reason : ''),
                     'warehouse', '?controller=warehouse&action=purchasingPo&tab=approval');
             }
@@ -2562,7 +2562,7 @@ public function deleteProductionHistory() {
         exit;
     }
 
-    // ─── Group-level PO draft decision (one decision per source/MRP run) ──────
+    // â”€â”€â”€ Group-level PO draft decision (one decision per source/MRP run) â”€â”€â”€â”€â”€â”€
 
     /** JSON line details for a recorded approval-group decision (history review). */
     public function groupLineDetails() {
@@ -2627,17 +2627,17 @@ public function deleteProductionHistory() {
                         $fail[] = $id;
                     }
                 }
-                if (!$moved) throw new \RuntimeException('No PO lines in this group could be approved — they may already be decided.');
-                $audit = 'PO draft group decided at the System Admin stage — ' . $groupRef . ' — '
+                if (!$moved) throw new \RuntimeException('No PO lines in this group could be approved â€” they may already be decided.');
+                $audit = 'PO draft group decided at the System Admin stage â€” ' . $groupRef . ' â€” '
                     . $moved . ' PO line(s) activated for Receiving';
-                if (count($fail)) $audit .= ' (' . count($fail) . ' line(s) skipped — already decided)';
-                $_SESSION['success'] = 'Approved ' . $moved . ' PO line(s) in ' . $groupRef . ' — active for receiving.'
+                if (count($fail)) $audit .= ' (' . count($fail) . ' line(s) skipped â€” already decided)';
+                $_SESSION['success'] = 'Approved ' . $moved . ' PO line(s) in ' . $groupRef . ' â€” active for receiving.'
                     . (count($fail) ? ' ' . count($fail) . ' skipped (already decided).' : '');
                 AuditModel::log($_SESSION['user_id'], 'APPROVE', 'warehouse', $audit,
                     $statesBefore ? ['lines' => $statesBefore] : null,
                     ['status' => 'pending'], 'po_draft_group', null);
                 NotificationHelper::create('po', 'PO Drafts Approved for Receiving',
-                    $groupRef . ' — ' . $moved . ' PO line(s) passed System Admin approval and are now Active for receiving.',
+                    $groupRef . ' â€” ' . $moved . ' PO line(s) passed System Admin approval and are now Active for receiving.',
                     'warehouse', '?controller=warehouse&action=receivingPo');
             }
         } catch (\Exception $e) {
@@ -2673,17 +2673,17 @@ public function deleteProductionHistory() {
                         $fail[] = $id;
                     }
                 }
-                if (!$moved) throw new \RuntimeException('No PO lines in this group could be rejected — they may already be decided.');
-                $audit = 'PO draft group decided at the System Admin stage — ' . $groupRef . ' — '
-                    . $moved . ' PO line(s) cancelled — Reason: ' . $reason;
-                if (count($fail)) $audit .= ' (' . count($fail) . ' line(s) skipped — already decided)';
+                if (!$moved) throw new \RuntimeException('No PO lines in this group could be rejected â€” they may already be decided.');
+                $audit = 'PO draft group decided at the System Admin stage â€” ' . $groupRef . ' â€” '
+                    . $moved . ' PO line(s) cancelled â€” Reason: ' . $reason;
+                if (count($fail)) $audit .= ' (' . count($fail) . ' line(s) skipped â€” already decided)';
                 $_SESSION['success'] = 'Rejected ' . $moved . ' PO line(s) in ' . $groupRef . ' (cancelled).'
                     . (count($fail) ? ' ' . count($fail) . ' skipped (already decided).' : '');
                 AuditModel::log($_SESSION['user_id'], 'REJECT', 'warehouse', $audit,
                     $statesBefore ? ['lines' => $statesBefore] : null,
                     ['status' => 'cancelled'], 'po_draft_group', null);
                 NotificationHelper::create('po', 'PO Draft Group Rejected',
-                    $groupRef . ' — ' . $moved . ' PO line(s) were rejected by the System Admin. Reason: ' . $reason,
+                    $groupRef . ' â€” ' . $moved . ' PO line(s) were rejected by the System Admin. Reason: ' . $reason,
                     'warehouse', '?controller=warehouse&action=purchasingPo&tab=approval');
             }
         } catch (\Exception $e) {
@@ -2693,7 +2693,7 @@ public function deleteProductionHistory() {
         exit;
     }
 
-    // ─── Receiving overage approval gate (System Admin) ───────────────────────
+    // â”€â”€â”€ Receiving overage approval gate (System Admin) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     public function approveOverageRequest() {
         try {
@@ -2706,7 +2706,7 @@ public function deleteProductionHistory() {
                 $label = ($_SESSION['full_name'] ?? $_SESSION['username'] ?? 'unknown') . ' (' . ($_SESSION['department'] ?? '') . ')';
                 $overQty = $this->warehouseModel->approveOverageRequest($id, $label);
                 $order = $this->warehouseModel->getSupplierOrderStatus($id);
-                $audit = 'Over-receipt approved — order #' . $id . ' item ' . ($order['item_code'] ?? '')
+                $audit = 'Over-receipt approved â€” order #' . $id . ' item ' . ($order['item_code'] ?? '')
                     . ' may receive ' . formatQty($overQty) . ' beyond the ordered ' . formatQty($order['quantity'] ?? 0)
                     . ' before QC.';
                 $_SESSION['success'] = $audit;
@@ -2714,7 +2714,7 @@ public function deleteProductionHistory() {
                     ['overage_request_status' => 'pending'], ['overage_request_status' => 'approved', 'overage_approved_qty' => $overQty],
                     'supplier_order', $id);
                 NotificationHelper::create('po', 'Over-Receipt Approved',
-                    ($order['po_ref'] ?: ('SO #' . $id)) . ' — over-receipt of ' . formatQty($overQty)
+                    ($order['po_ref'] ?: ('SO #' . $id)) . ' â€” over-receipt of ' . formatQty($overQty)
                     . ' beyond ordered approved. Warehouse can now submit the shipment to QC within the approved cap.',
                     'warehouse', '?controller=warehouse&action=receivingPo');
             }
@@ -2737,15 +2737,15 @@ public function deleteProductionHistory() {
                 $label = ($_SESSION['full_name'] ?? $_SESSION['username'] ?? 'unknown') . ' (' . ($_SESSION['department'] ?? '') . ')';
                 $overQty = $this->warehouseModel->rejectOverageRequest($id, $reason, $label);
                 $order = $this->warehouseModel->getSupplierOrderStatus($id);
-                $audit = 'Over-receipt request rejected — order #' . $id . ' item ' . ($order['item_code'] ?? '')
-                    . ' requested +' . formatQty($overQty) . ' beyond ordered — Reason: '
+                $audit = 'Over-receipt request rejected â€” order #' . $id . ' item ' . ($order['item_code'] ?? '')
+                    . ' requested +' . formatQty($overQty) . ' beyond ordered â€” Reason: '
                     . ($reason !== '' ? $reason : 'not provided');
                 $_SESSION['success'] = $audit;
                 AuditModel::log($_SESSION['user_id'], 'REJECT', 'warehouse', $audit,
                     ['overage_request_status' => 'pending'], ['overage_request_status' => 'rejected'],
                     'supplier_order', $id);
                 NotificationHelper::create('po', 'Over-Receipt Request Rejected',
-                    ($order['po_ref'] ?: ('SO #' . $id)) . ' — over-receipt request (' . formatQty($overQty)
+                    ($order['po_ref'] ?: ('SO #' . $id)) . ' â€” over-receipt request (' . formatQty($overQty)
                     . ' beyond ordered) was rejected.' . ($reason !== '' ? ' Reason: ' . $reason : '')
                     . ' Only the ordered quantity remains receivable.',
                     'warehouse', '?controller=warehouse&action=receivingPo');
@@ -2757,7 +2757,7 @@ public function deleteProductionHistory() {
         exit;
     }
 
-    // ─── Group-level over-receipt decision (one decision per source/MRP run) ───
+    // â”€â”€â”€ Group-level over-receipt decision (one decision per source/MRP run) â”€â”€â”€
 
     private function overageGroupDecision(bool $approve): void {
         try {
@@ -2794,12 +2794,12 @@ public function deleteProductionHistory() {
                         $fail[] = $id;
                     }
                 }
-                if (!$moved) throw new \RuntimeException('No over-receipt requests in this group could be decided — they may already be resolved.');
+                if (!$moved) throw new \RuntimeException('No over-receipt requests in this group could be decided â€” they may already be resolved.');
                 $action = $approve ? 'approved' : 'rejected';
-                $audit = 'Over-receipt request group ' . $action . ' — ' . $groupRef . ' — '
-                    . $moved . ' line(s) — ' . implode(', ', $qtySummary)
-                    . (!$approve ? ' — Reason: ' . $reason : '');
-                if (count($fail)) $audit .= ' (' . count($fail) . ' line(s) skipped — already resolved)';
+                $audit = 'Over-receipt request group ' . $action . ' â€” ' . $groupRef . ' â€” '
+                    . $moved . ' line(s) â€” ' . implode(', ', $qtySummary)
+                    . (!$approve ? ' â€” Reason: ' . $reason : '');
+                if (count($fail)) $audit .= ' (' . count($fail) . ' line(s) skipped â€” already resolved)';
                 $_SESSION['success'] = ucfirst($action) . ' ' . $moved . ' over-receipt request(s) in ' . $groupRef . '.'
                     . (count($fail) ? ' ' . count($fail) . ' skipped (already resolved).' : '');
                 AuditModel::log($_SESSION['user_id'], $approve ? 'APPROVE' : 'REJECT', 'warehouse', $audit,
@@ -2807,7 +2807,7 @@ public function deleteProductionHistory() {
                     ['overage_request_status' => $approve ? 'approved' : 'rejected'],
                     'overage_group', null);
                 NotificationHelper::create('po', $approve ? 'Over-Receipt Requests Approved' : 'Over-Receipt Requests Rejected',
-                    $groupRef . ' — ' . $moved . ' over-receipt request(s) ' . $action . ' by the System Admin.'
+                    $groupRef . ' â€” ' . $moved . ' over-receipt request(s) ' . $action . ' by the System Admin.'
                     . (!$approve ? ' Reason: ' . $reason : ''),
                     'warehouse', '?controller=warehouse&action=receivingPo');
             }
@@ -2830,7 +2830,7 @@ public function deleteProductionHistory() {
         $data['reportedCount'] = $this->warehouseModel->getReportedRemarksCount();
         $data['reportsCount'] = $this->warehouseModel->getProductionReportsCount();
         // Sidebar badge: everything awaiting a System Admin decision (MRP gate,
-        // PO drafts, over-receipt requests — see WarehouseModel::getAdminApprovalsCount).
+        // PO drafts, over-receipt requests â€” see WarehouseModel::getAdminApprovalsCount).
         if (($_SESSION['department'] ?? '') === 'admin') {
             try {
                 $data['approvalsCount'] = $this->warehouseModel->getAdminApprovalsCount();
