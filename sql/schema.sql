@@ -1,4 +1,4 @@
-﻿-- Manufacturing Management System Database Schema
+-- Manufacturing Management System Database Schema
 -- Generated from the live `manufacturing_mgmt` database on 2026-11-05 (MariaDB 10.4.32).
 -- Regenerate with:
 --   mysqldump -u root --no-data --skip-add-drop-table --routines=FALSE --triggers=FALSE manufacturing_mgmt
@@ -1158,3 +1158,4 @@ CREATE TABLE IF NOT EXISTS `users` (
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
 -- Dump completed on 2026-11-05 17:18:17
+

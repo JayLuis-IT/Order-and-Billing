@@ -136,6 +136,7 @@ class ProductionController {
                 $preparedByName = trim($_POST['prepared_by_name'] ?? '') ?: null;
                 $checkedByName = trim($_POST['checked_by_name'] ?? '') ?: null;
                 $receivedByName = trim($_POST['received_by_name'] ?? '') ?: null;
+                $savedLotGroups = [];
                 if (!is_array($shifts)) $shifts = [$shifts];
                 if (!is_array($rejectStatuses)) $rejectStatuses = [$rejectStatuses];
                 if (!is_array($stsRemarks)) $stsRemarks = [$stsRemarks];

@@ -12,6 +12,8 @@ class FinanceModel extends BaseModel {
                 LEFT JOIN customers c ON po.customer_id = c.customer_id 
                 LEFT JOIN users u ON po.requested_by = u.user_id 
                 WHERE po.`remove` = 0 
+                AND po.manually_closed = 0
+                AND EXISTS (SELECT 1 FROM purchase_order_items oi WHERE oi.po_id = po.po_id AND oi.manually_closed = 0)
                 AND po.production_type = 'normal'
                 AND po.produced_quantity > po.delivered_quantity
                 ORDER BY po.date_created DESC";
@@ -26,7 +28,15 @@ class FinanceModel extends BaseModel {
                 LEFT JOIN customers c ON po.customer_id = c.customer_id 
                 LEFT JOIN users u ON po.requested_by = u.user_id 
                 WHERE po.`remove` = 0
-                ORDER BY po.date_created DESC";
+                AND po.manually_closed = 0
+                AND EXISTS (SELECT 1 FROM purchase_order_items oi2 WHERE oi2.po_id = po.po_id AND oi2.manually_closed = 0)
+                ORDER BY CASE
+                        WHEN po.manually_closed = 1
+                            OR (SELECT COALESCE(SUM(poiS.delivered_quantity), 0) FROM purchase_order_items poiS WHERE poiS.po_id = po.po_id) >= (SELECT COALESCE(SUM(poiQ.quantity), 0) FROM purchase_order_items poiQ WHERE poiQ.po_id = po.po_id) THEN 2
+                        WHEN (SELECT COALESCE(SUM(poiD.delivered_quantity), 0) FROM purchase_order_items poiD WHERE poiD.po_id = po.po_id) > 0 THEN 0
+                        ELSE 1
+                    END ASC,
+                    po.date_created DESC";
         $stmt = self::getConnection()->prepare($sql);
         $stmt->execute();
         return $stmt->fetchAll();
@@ -188,7 +198,7 @@ class FinanceModel extends BaseModel {
         $stmt = self::getConnection()->query("SELECT COUNT(*) as cnt FROM purchase_orders WHERE `remove` = 0");
         $data['total_pos'] = $stmt->fetch()['cnt'];
 
-        $stmt = self::getConnection()->query("SELECT COUNT(*) as cnt FROM purchase_orders WHERE `remove` = 0 AND production_type = 'normal' AND produced_quantity > delivered_quantity");
+        $stmt = self::getConnection()->query("SELECT COUNT(*) as cnt FROM purchase_orders po WHERE po.`remove` = 0 AND po.manually_closed = 0 AND EXISTS (SELECT 1 FROM purchase_order_items oi4 WHERE oi4.po_id = po.po_id AND oi4.manually_closed = 0) AND po.production_type = 'normal' AND po.produced_quantity > po.delivered_quantity");
         $data['ready_to_deliver'] = $stmt->fetch()['cnt'];
 
         $stmt = self::getConnection()->query("SELECT COUNT(*) as cnt FROM deliveries WHERE `remove` = 0");
@@ -211,6 +221,7 @@ class FinanceModel extends BaseModel {
                 FROM purchase_order_items poi 
                 LEFT JOIN items i ON poi.item_id = i.item_id
                 WHERE i.`remove` = 0
+                AND poi.manually_closed = 0
                 ORDER BY poi.produced_quantity DESC, poi.poi_id ASC";
         $stmt = self::getConnection()->prepare($sql);
         $stmt->execute();
@@ -247,7 +258,9 @@ class FinanceModel extends BaseModel {
                 FROM purchase_orders po 
                 LEFT JOIN customers c ON po.customer_id = c.customer_id 
                 LEFT JOIN users u ON po.requested_by = u.user_id 
-                WHERE po.`remove` = 0";
+                WHERE po.`remove` = 0
+                AND po.manually_closed = 0
+                AND EXISTS (SELECT 1 FROM purchase_order_items oi5 WHERE oi5.po_id = po.po_id AND oi5.manually_closed = 0)";
         $params = [];
 
         if (!empty($filters['search'])) {
@@ -278,7 +291,13 @@ class FinanceModel extends BaseModel {
             $params['filter_item'] = '%' . $filters['item_description'] . '%';
         }
 
-        $sql .= " ORDER BY po.date_created DESC";
+        $sql .= " ORDER BY CASE
+                        WHEN po.manually_closed = 1
+                            OR (SELECT COALESCE(SUM(poiS2.delivered_quantity), 0) FROM purchase_order_items poiS2 WHERE poiS2.po_id = po.po_id) >= (SELECT COALESCE(SUM(poiQ2.quantity), 0) FROM purchase_order_items poiQ2 WHERE poiQ2.po_id = po.po_id) THEN 2
+                        WHEN (SELECT COALESCE(SUM(poiD2.delivered_quantity), 0) FROM purchase_order_items poiD2 WHERE poiD2.po_id = po.po_id) > 0 THEN 0
+                        ELSE 1
+                    END ASC,
+                    po.date_created DESC";
         $stmt = self::getConnection()->prepare($sql);
         $stmt->execute($params);
         return $stmt->fetchAll();
@@ -291,6 +310,8 @@ class FinanceModel extends BaseModel {
                 LEFT JOIN customers c ON po.customer_id = c.customer_id 
                 LEFT JOIN users u ON po.requested_by = u.user_id 
                 WHERE po.`remove` = 0 
+                AND po.manually_closed = 0
+                AND EXISTS (SELECT 1 FROM purchase_order_items oi3 WHERE oi3.po_id = po.po_id AND oi3.manually_closed = 0)
                 AND po.production_type = 'normal'
                 AND po.produced_quantity > po.delivered_quantity";
         $params = [];

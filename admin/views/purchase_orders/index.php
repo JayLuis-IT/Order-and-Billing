@@ -71,8 +71,19 @@
                                     $itemQty = intval($item['quantity'] ?? 0);
                                     $itemDelivered = intval($item['delivered_quantity'] ?? 0);
                                     $itemPercent = $itemQty > 0 ? min(100, round(($itemDelivered / $itemQty) * 100)) : 0;
-                                    $statusLabel = $itemDelivered <= 0 ? 'Pending' : ($itemDelivered >= $itemQty ? 'Fully Delivered' : 'Partial (' . ($itemQty - $itemDelivered) . ' left)');
-                                    $statusClass = $itemDelivered >= $itemQty ? 'bg-success' : ($itemDelivered > 0 ? 'bg-warning text-dark' : 'bg-secondary');
+                                    $poManuallyClosed = !empty($po['manually_closed']);
+                                    $itemManuallyClosed = !empty($item['manually_closed']);
+                                    $itemFullyDelivered = $itemDelivered >= $itemQty && $itemQty > 0;
+                                    if ($poManuallyClosed || $itemManuallyClosed) {
+                                        $statusLabel = 'Manually Closed';
+                                        $statusClass = 'bg-dark';
+                                    } elseif ($itemFullyDelivered) {
+                                        $statusLabel = 'Closed';
+                                        $statusClass = 'bg-success';
+                                    } else {
+                                        $statusLabel = $itemDelivered <= 0 ? 'Pending' : 'Partial (' . ($itemQty - $itemDelivered) . ' left)';
+                                        $statusClass = $itemDelivered > 0 ? 'bg-warning text-dark' : 'bg-secondary';
+                                    }
                                 ?>
                                     <?= $idx > 0 ? '<hr class="my-1 border-secondary">' : '' ?>
                                     <div class="d-flex align-items-center gap-2">
@@ -161,6 +172,8 @@
                                 <th>UOM</th>
                                 <th>Quantity</th>
                                 <th>Progress</th>
+                                <th>Status</th>
+                                <th class="text-center">Action</th>
                             </tr>
                         </thead>
                         <tbody id="viewPOItems">
@@ -197,6 +210,15 @@
                         </tfoot>
                     </table>
                 </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-danger" id="closePOBtn" style="display:none;">
+                    <i class="bi bi-x-octagon me-1"></i>Close PO
+                </button>
+                <button type="button" class="btn btn-secondary" id="reopenPOBtn" style="display:none;">
+                    <i class="bi bi-arrow-counterclockwise me-1"></i>Reopen PO
+                </button>
             </div>
         </div>
     </div>
@@ -271,6 +293,22 @@ document.addEventListener('DOMContentLoaded', function() {
                             var itemPercent = qty > 0 ? Math.min(100, Math.round((itemDelivered / qty) * 100)) : 0;
                             var barClass = itemPercent >= 100 ? 'bg-success' : 'bg-warning';
                             var barWidth = Math.min(itemPercent, 100);
+                            var itemManuallyClosed = parseInt(item.manually_closed) === 1;
+                            var itemFullyDelivered = qty > 0 && itemDelivered >= qty;
+                            var statusLabel, statusClass, actionBtn;
+                            if (itemManuallyClosed) {
+                                statusLabel = 'Manually Closed';
+                                statusClass = 'bg-dark';
+                                actionBtn = '<button type="button" class="btn btn-sm btn-outline-secondary close-item-btn" data-action="reopenPOItem" data-poi-id="' + item.poi_id + '" title="Reopen item"><i class="bi bi-arrow-counterclockwise"></i></button>';
+                            } else if (itemFullyDelivered) {
+                                statusLabel = 'Closed';
+                                statusClass = 'bg-success';
+                                actionBtn = '<span class="text-muted">—</span>';
+                            } else {
+                                statusLabel = itemDelivered <= 0 ? 'Pending' : 'Partial (' + (qty - itemDelivered) + ' left)';
+                                statusClass = itemDelivered > 0 ? 'bg-warning text-dark' : 'bg-secondary';
+                                actionBtn = '<button type="button" class="btn btn-sm btn-outline-danger close-item-btn" data-action="closePOItem" data-poi-id="' + item.poi_id + '" title="Close item"><i class="bi bi-x-octagon"></i></button>';
+                            }
                             tbody.innerHTML += '<tr>' +
                                 '<td>' + (item.item_code || '-') + '</td>' +
                                 '<td>' + (item.item_description || '-') + '</td>' +
@@ -284,10 +322,12 @@ document.addEventListener('DOMContentLoaded', function() {
                                         '<small class="text-muted">' + itemDelivered + '/' + qty + ' pcs</small>' +
                                     '</div>' +
                                 '</td>' +
+                                '<td><span class="badge ' + statusClass + ' text-nowrap">' + statusLabel + '</span></td>' +
+                                '<td class="text-center">' + actionBtn + '</td>' +
                                 '</tr>';
                         });
                     } else {
-                        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-3">No items found</td></tr>';
+                        tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-3">No items found</td></tr>';
                     }
 
                     var lotSelect = document.getElementById('lotTrackerItem');
@@ -303,6 +343,14 @@ document.addEventListener('DOMContentLoaded', function() {
                     document.getElementById('lotTrackerBody').innerHTML = '<tr><td colspan="2" class="text-center text-muted py-3">Select an item to view lots</td></tr>';
                     document.getElementById('lotTrackerFoot').style.display = 'none';
 
+                    var closeBtn = document.getElementById('closePOBtn');
+                    var reopenBtn = document.getElementById('reopenPOBtn');
+                    closeBtn.setAttribute('data-po-id', poId);
+                    reopenBtn.setAttribute('data-po-id', poId);
+                    var manuallyClosed = parseInt(po.manually_closed) === 1;
+                    closeBtn.style.display = manuallyClosed ? 'none' : '';
+                    reopenBtn.style.display = manuallyClosed ? '' : 'none';
+
                     var modal = new bootstrap.Modal(document.getElementById('viewPOModal'));
                     modal.show();
                 })
@@ -314,6 +362,45 @@ document.addEventListener('DOMContentLoaded', function() {
 
     document.getElementById('lotTrackerItem').addEventListener('change', function() {
         loadLots(this.value);
+    });
+
+    function submitPOAction(action, id, field) {
+        var body = new FormData();
+        body.append(field || 'po_id', id);
+        fetch('?controller=admin&action=' + action, { method: 'POST', body: body })
+            .then(function(r) { return r.text(); })
+            .then(function() { window.location.reload(); })
+            .catch(function() { alert('Request failed. Please try again.'); });
+    }
+
+    document.getElementById('closePOBtn').addEventListener('click', function() {
+        var poId = this.getAttribute('data-po-id');
+        if (confirm('Close this PO? It will no longer appear in the Delivery Receipt flow. You can reopen it later from this modal.')) {
+            submitPOAction('closePO', poId);
+        }
+    });
+
+    document.getElementById('reopenPOBtn').addEventListener('click', function() {
+        var poId = this.getAttribute('data-po-id');
+        if (confirm('Reopen this PO? It will become available in the Delivery Receipt flow again.')) {
+            submitPOAction('reopenPO', poId);
+        }
+    });
+
+    document.getElementById('viewPOItems').addEventListener('click', function(e) {
+        var btn = e.target.closest('.close-item-btn');
+        if (!btn) return;
+        var action = btn.getAttribute('data-action');
+        var poiId = btn.getAttribute('data-poi-id');
+        if (action === 'reopenPOItem') {
+            if (confirm('Reopen this item? It will become available in the Delivery Receipt flow again.')) {
+                submitPOAction('reopenPOItem', poiId, 'poi_id');
+            }
+        } else {
+            if (confirm('Close this item? It will no longer be available for delivery. You can reopen it later.')) {
+                submitPOAction('closePOItem', poiId, 'poi_id');
+            }
+        }
     });
 });
 

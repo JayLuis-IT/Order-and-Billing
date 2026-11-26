@@ -495,6 +495,70 @@ public function purchaseOrders() {
     $this->render('purchase_orders/index', $data);
 }
 
+public function closePO() {
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        header('Location: ?controller=admin&action=purchaseOrders');
+        exit;
+    }
+    $poId = intval($_POST['po_id'] ?? 0);
+    if ($poId > 0 && $this->warehouseModel->closePurchaseOrder($poId)) {
+        AuditModel::log($_SESSION['user_id'], 'UPDATE', 'admin', 'Manually closed PO #' . $poId, null, ['po_id' => $poId], 'purchase_order', $poId);
+        $_SESSION['success'] = 'PO closed successfully';
+    } else {
+        $_SESSION['error'] = 'Failed to close PO';
+    }
+    header('Location: ?controller=admin&action=purchaseOrders');
+    exit;
+}
+
+public function reopenPO() {
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        header('Location: ?controller=admin&action=purchaseOrders');
+        exit;
+    }
+    $poId = intval($_POST['po_id'] ?? 0);
+    if ($poId > 0 && $this->warehouseModel->reopenPurchaseOrder($poId)) {
+        AuditModel::log($_SESSION['user_id'], 'UPDATE', 'admin', 'Reopened PO #' . $poId, null, ['po_id' => $poId], 'purchase_order', $poId);
+        $_SESSION['success'] = 'PO reopened successfully';
+    } else {
+        $_SESSION['error'] = 'Failed to reopen PO';
+    }
+    header('Location: ?controller=admin&action=purchaseOrders');
+    exit;
+}
+
+public function closePOItem() {
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        header('Location: ?controller=admin&action=purchaseOrders');
+        exit;
+    }
+    $poiId = intval($_POST['poi_id'] ?? 0);
+    if ($poiId > 0 && $this->warehouseModel->closePurchaseOrderItem($poiId)) {
+        AuditModel::log($_SESSION['user_id'], 'UPDATE', 'admin', 'Manually closed PO item #' . $poiId, null, ['poi_id' => $poiId], 'purchase_order_item', $poiId);
+        $_SESSION['success'] = 'PO item closed successfully';
+    } else {
+        $_SESSION['error'] = 'Failed to close PO item';
+    }
+    header('Location: ?controller=admin&action=purchaseOrders');
+    exit;
+}
+
+public function reopenPOItem() {
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        header('Location: ?controller=admin&action=purchaseOrders');
+        exit;
+    }
+    $poiId = intval($_POST['poi_id'] ?? 0);
+    if ($poiId > 0 && $this->warehouseModel->reopenPurchaseOrderItem($poiId)) {
+        AuditModel::log($_SESSION['user_id'], 'UPDATE', 'admin', 'Reopened PO item #' . $poiId, null, ['poi_id' => $poiId], 'purchase_order_item', $poiId);
+        $_SESSION['success'] = 'PO item reopened successfully';
+    } else {
+        $_SESSION['error'] = 'Failed to reopen PO item';
+    }
+    header('Location: ?controller=admin&action=purchaseOrders');
+    exit;
+}
+
 public function delivered() {
     $search = $_GET['search'] ?? '';
     $filterCustomer = $_GET['filter_customer'] ?? '';
@@ -1163,12 +1227,37 @@ public function deleteProductionHistory() {
         ];
         $deliveries = $this->warehouseModel->getDeliveryReportData($filters);
 
-        header('Content-Type: text/csv; charset=UTF-8');
-        header('Content-Disposition: attachment; filename="delivery_report_' . date('Y-m-d') . '.csv"');
-        $output = fopen('php://output', 'w');
-        fprintf($output, chr(0xEF).chr(0xBB).chr(0xBF));
-
-        fputcsv($output, ['#', 'DR Number', 'SI Number', 'Customer', 'PO Number', 'Item Code', 'Item', 'Lot Number', 'Quantity', 'Cases', 'Plate No.', 'Vehicle', 'Logistic Provider', 'Type', 'Delivery Date', 'Delivered By', 'Remarks']);
+        $xlsx = new XlsxExport();
+        $xlsx->addSheet('Delivery Report');
+        $xlsx->addRow(['DELIVERY REPORT'], 2);
+        $xlsx->addMerge('A', 1, 'I', 1);
+        $xlsx->addRow([
+            ['value' => 'SI Number', 'style' => 2],
+            ['value' => 'Customer', 'style' => 2],
+            ['value' => 'DR Date', 'style' => 2],
+            ['value' => 'DR Number', 'style' => 2],
+            ['value' => 'Item Name', 'style' => 2],
+            ['value' => 'Qty Delivered', 'style' => 2],
+            ['value' => '', 'style' => 2],
+            ['value' => 'Lot Number', 'style' => 2],
+            ['value' => 'Multiplier (PCS to CS)', 'style' => 2],
+        ], 2);
+        $xlsx->addRow([
+            ['value' => '', 'style' => 2],
+            ['value' => '', 'style' => 2],
+            ['value' => '', 'style' => 2],
+            ['value' => '', 'style' => 2],
+            ['value' => '', 'style' => 2],
+            ['value' => 'PCS', 'style' => 2], ['value' => 'CS', 'style' => 2],
+            ['value' => '', 'style' => 2],
+            ['value' => '', 'style' => 2],
+        ], 2);
+        foreach (['A', 'B', 'C', 'D', 'E', 'H', 'I'] as $col) {
+            $xlsx->addMerge($col, 2, $col, 3);
+        }
+        $xlsx->addMerge('F', 2, 'G', 2);
+        $headerRow = 3;
+        $xlsx->setAutoFilter('A', $headerRow, 'I', $headerRow);
         $rowNum = 0;
         foreach ($deliveries as $d) {
             $lotItems = json_decode($d['lot_items'] ?? '[]', true);
@@ -1186,33 +1275,23 @@ public function deleteProductionHistory() {
                 $rowNum++;
                 $qty = intval($li['qty'] ?? 0);
                 $conv = $li['actual_uom_conversion'] ?? $li['uom_conversion'] ?? null;
-                $uom = $li['item_uom'] ?? '';
-                $cases = ($conv && $uom !== 'CS') ? floor($qty / $conv) . ' CS' : '';
-                $remarks = $d['report_remarks'] ?? $d['remarks'] ?? '';
-                fputcsv($output, [
-                    $rowNum,
-                    $d['dr_number'] ?? '',
+                $multiplier = ($conv && intval($conv) > 0) ? intval($conv) : '';
+                $qtyCs = ($conv && intval($conv) > 0) ? intval(floor($qty / intval($conv))) : $qty;
+                $xlsx->addRow([
                     $d['si_number'] ?? '',
                     $d['customer_name'] ?? '',
-                    $d['customer_po_number'] ?? '',
-                    $li['item_code'] ?? '',
+                    !empty($d['delivery_date']) ? date('Y-m-d', strtotime($d['delivery_date'])) : '',
+                    $d['dr_number'] ?? '',
                     $li['item_description'] ?? '',
+                    $qty . ' pcs', $qtyCs . ' cs',
                     $li['lot_number'] ?? '',
-                    $qty,
-                    $cases,
-                    $d['plate_number'] ?? '',
-                    $d['vehicle_type'] ?? '',
-                    $d['logistic_provider'] ?? '',
-                    $d['production_type'] ?? '',
-                    $d['delivery_date'] ?? '',
-                    $d['delivered_by_name'] ?? '',
-                    $remarks
+                    $multiplier
                 ]);
             }
         }
+        $xlsx->autoFitColumns();
 
-        fclose($output);
-        exit;
+        $xlsx->download('delivery_report_' . date('Y-m-d') . '.xlsx');
     }
 
     public function exportReports() {
@@ -1239,6 +1318,8 @@ public function deleteProductionHistory() {
         $filterPo = $_GET['po_filter'] ?? '';
         $filterItem = $_GET['item_filter'] ?? '';
         $filterStatus = $_GET['status_filter'] ?? '';
+        $filterDateFrom = $_GET['date_from'] ?? '';
+        $filterDateTo = $_GET['date_to'] ?? '';
 
         $filteredItems = $poItemSummary;
         if ($filterSearch !== '') {
@@ -1267,11 +1348,20 @@ public function deleteProductionHistory() {
             });
         }
         $filteredItems = array_values($filteredItems);
+        if ($filterDateFrom !== '') {
+            $filteredItems = array_filter($filteredItems, fn($i) => !empty($i['po_date']) && date('Y-m-d', strtotime($i['po_date'])) >= $filterDateFrom);
+        }
+        if ($filterDateTo !== '') {
+            $filteredItems = array_filter($filteredItems, fn($i) => !empty($i['po_date']) && date('Y-m-d', strtotime($i['po_date'])) <= $filterDateTo);
+        }
+        $filteredItems = array_values($filteredItems);
 
         $xlsx = new XlsxExport();
 
         $weekFrom = ($weekOffset * 12) + 1;
+        $sheet = $_GET['sheet'] ?? '';
 
+        if ($sheet === '' || $sheet === 'weekly') {
         $xlsx->addSheet('Weekly Delivery Graph');
         $xlsx->addRow(['WEEKLY DELIVERY GRAPH'], 1);
         $xlsx->addMerge('A', 1, 'E', 1);
@@ -1290,41 +1380,157 @@ public function deleteProductionHistory() {
             $weekNum++;
         }
         $xlsx->autoFitColumns();
+        }
 
+        if ($sheet === '' || $sheet === 'po_items') {
         $xlsx->addSheet('PO Item Summary');
-        $xlsx->addRow(['PO ITEM SUMMARY'], 1);
-        $xlsx->addMerge('A', 1, 'I', 1);
-        $poHeaderRow = $xlsx->addRow(['Customer', 'PO Number', 'Item Code', 'Item', 'PO Qty', 'Produced', 'Delivered', 'Balance', 'Status'], 2);
-        $xlsx->setAutoFilter('A', $poHeaderRow, 'I', $poHeaderRow);
+
+        // --- Column selection (from export preview modal) ---
+        $colLabels = [
+            'customer' => 'Customer',
+            'po_number' => 'PO#',
+            'po_date' => 'PO Date',
+            'item' => 'Item Name',
+            'order_qty' => 'Order Qty',
+            'delivered_qty' => 'Delivered Qty',
+            'balance_qty' => 'Balance Qty',
+            'status' => 'Status',
+        ];
+        $allColKeys = array_keys($colLabels);
+        $requestedCols = isset($_GET['cols']) ? (array)$_GET['cols'] : $allColKeys;
+        $cols = array_values(array_intersect($allColKeys, $requestedCols));
+        if (empty($cols)) $cols = $allColKeys;
+
+        // Compute per-row values once (status is needed for sorting too)
+        $rows = [];
         foreach ($filteredItems as $item) {
             $conv = intval($item['uom_conversion'] ?? 0);
-            $ordered = intval($item['po_qty']);
-            $produced = intval($item['produced_quantity']);
-            $delivered = intval($item['delivered_quantity']);
-            $balance = $ordered - $delivered;
-            if ($conv > 0) {
-                $ordered = floor($ordered / $conv);
-                $produced = floor($produced / $conv);
-                $delivered = floor($delivered / $conv);
-                $balance = floor($balance / $conv);
-            }
-            if ($delivered >= $ordered) {
-                $status = 'Completed';
-            } elseif ($produced > 0) {
-                $status = 'In Progress';
+            $orderedPcs = intval($item['po_qty']);
+            $deliveredPcs = intval($item['delivered_quantity']);
+            $balancePcs = max(0, $orderedPcs - $deliveredPcs);
+            $orderedCs = $conv > 0 ? intval(floor($orderedPcs / $conv)) : $orderedPcs;
+            $deliveredCs = $conv > 0 ? intval(floor($deliveredPcs / $conv)) : $deliveredPcs;
+            $balanceCs = $conv > 0 ? intval(floor($balancePcs / $conv)) : $balancePcs;
+
+            $itemManuallyClosed = intval($item['manually_closed'] ?? 0) === 1;
+            $poManuallyClosed = intval($item['po_manually_closed'] ?? 0) === 1;
+            if ($deliveredPcs >= $orderedPcs) {
+                $status = 'Closed';
+            } elseif ($itemManuallyClosed || $poManuallyClosed) {
+                $status = 'Manually Closed';
+            } elseif ($deliveredPcs > 0) {
+                $status = 'Partial';
             } else {
                 $status = 'Pending';
             }
-            $xlsx->addRow([
-                $item['customer_name'] ?? '',
-                $item['customer_po_number'] ?? '',
-                $item['item_code'] ?? '',
-                $item['item_description'] ?? '',
-                $ordered, $produced, $delivered, $balance, $status
-            ]);
+
+            $values = [
+                'customer' => $item['customer_name'] ?? '',
+                'po_number' => $item['customer_po_number'] ?? '',
+                'po_date' => $item['po_date'] ? date('Y-m-d', strtotime($item['po_date'])) : '',
+                'item' => $item['item_description'] ?? '',
+                'order_qty' => [$orderedPcs, $orderedCs],
+                'delivered_qty' => [$deliveredPcs, $deliveredCs],
+                'balance_qty' => [$balancePcs, $balanceCs],
+                'status' => $status,
+            ];
+            $rows[] = $values;
+        }
+
+        // --- Sorting ---
+        $sort = $_GET['sort'] ?? 'customer';
+        if (!in_array($sort, ['customer', 'po_number', 'po_date', 'item', 'status'])) $sort = 'customer';
+        $statusRank = ['Pending' => 0, 'Partial' => 1, 'Closed' => 2, 'Manually Closed' => 3];
+        usort($rows, function($a, $b) use ($sort, $statusRank) {
+            $av = $a[$sort];
+            $bv = $b[$sort];
+            if (is_array($av)) $av = $av[0];
+            if (is_array($bv)) $bv = $bv[0];
+            if ($sort === 'status') return $statusRank[$av] <=> $statusRank[$bv];
+            if ($sort === 'po_date') return strcmp($av, $bv);
+            return strcasecmp((string)$av, (string)$bv);
+        });
+
+        // --- Header (two-row grouped layout when any qty pair is selected) ---
+        $hasPairs = count(array_intersect(['order_qty', 'delivered_qty', 'balance_qty'], $cols)) > 0;
+        $simpleKeys = ['customer', 'po_number', 'po_date', 'item', 'status'];
+        $pairKeys = ['order_qty', 'delivered_qty', 'balance_qty'];
+
+        $colLetter = function($n) {
+            $r = '';
+            while ($n >= 0) { $r = chr(65 + ($n % 26)) . $r; $n = intdiv($n, 26) - 1; }
+            return $r;
+        };
+        $totalCols = 0;
+        foreach ($cols as $c) {
+            $totalCols += in_array($c, $pairKeys) ? 2 : 1;
+        }
+        $lastCol = $colLetter($totalCols - 1);
+
+        $xlsx->addRow(['PO ITEM SUMMARY'], 2);
+        $xlsx->addMerge('A', 1, $lastCol, 1);
+
+        if ($hasPairs) {
+            $headerRow1 = [];
+            $headerRow2 = [];
+            $colIdx = 0;
+            $merges = [];
+            foreach ($cols as $col) {
+                if (in_array($col, $simpleKeys)) {
+                    $headerRow1[] = ['value' => $colLabels[$col], 'style' => 2];
+                    $headerRow2[] = ['value' => '', 'style' => 2];
+                    $merges[] = [$colLetter($colIdx), $colLetter($colIdx)];
+                    $colIdx++;
+                } else {
+                    $headerRow1[] = ['value' => $colLabels[$col], 'style' => 2];
+                    $headerRow1[] = ['value' => '', 'style' => 2];
+                    $headerRow2[] = ['value' => 'PCS', 'style' => 2];
+                    $headerRow2[] = ['value' => 'CS', 'style' => 2];
+                    $merges[] = [$colLetter($colIdx), $colLetter($colIdx + 1)];
+                    $colIdx += 2;
+                }
+            }
+            $xlsx->addRow($headerRow1, 2);
+            $xlsx->addRow($headerRow2, 2);
+            $colIdx = 0;
+            foreach ($cols as $col) {
+                if (in_array($col, $simpleKeys)) {
+                    $xlsx->addMerge($colLetter($colIdx), 2, $colLetter($colIdx), 3);
+                    $colIdx++;
+                } else {
+                    $xlsx->addMerge($colLetter($colIdx), 2, $colLetter($colIdx + 1), 2);
+                    $colIdx += 2;
+                }
+            }
+            $xlsx->setAutoFilter('A', 3, $lastCol, 3);
+        } else {
+            $headerRow = [];
+            foreach ($cols as $col) {
+                $headerRow[] = ['value' => $colLabels[$col], 'style' => 2];
+            }
+            $xlsx->addRow($headerRow, 2);
+            $xlsx->setAutoFilter('A', 2, $lastCol, 2);
+        }
+
+        foreach ($rows as $values) {
+            $rowCells = [];
+            foreach ($cols as $col) {
+                $v = $values[$col];
+                if (is_array($v)) {
+                    $rowCells[] = $v[0];
+                    $rowCells[] = $v[1];
+                } elseif ($col === 'po_date' && (($filterDateFrom !== '' && $v === $filterDateFrom) || ($filterDateTo !== '' && $v === $filterDateTo))) {
+                    $rowCells[] = ['value' => $v, 'style' => 5];
+                } else {
+                    $rowCells[] = $v;
+                }
+            }
+            $xlsx->addRow($rowCells);
         }
         $xlsx->autoFitColumns();
+        }
 
+        if ($sheet === '' || $sheet === 'stock') {
         $xlsx->addSheet('Stock on Hand');
         $xlsx->addRow(['STOCK ON HAND'], 1);
         $xlsx->addMerge('A', 1, 'G', 1);
@@ -1349,8 +1555,13 @@ public function deleteProductionHistory() {
             ]);
         }
         $xlsx->autoFitColumns();
+        }
 
-        $xlsx->download('admin_reports_' . date('Y-m-d') . '.xlsx');
+        $sheetFileNames = ['weekly' => 'weekly-deliveries', 'po_items' => 'po-item-summary', 'stock' => 'stock-on-hand'];
+        $filename = isset($sheetFileNames[$sheet])
+            ? $sheetFileNames[$sheet] . '(' . date('m/d/y') . ').xlsx'
+            : 'admin_reports_' . date('Y-m-d') . '.xlsx';
+        $xlsx->download($filename);
     }
 
     public function viewBackloads() {

@@ -78,11 +78,6 @@
                 <tr>
                     <td>
                         <?= date('Y-m-d H:i', strtotime($h['date_created'])) ?>
-                        <?php if (!empty($h['date_edited'])): ?>
-                            <br><small class="text-info" title="Edited by <?= htmlspecialchars($h['edited_by_name'] ?? '') ?>">
-                                <i class="bi bi-pencil-square"></i> Edited <?= date('m/d H:i', strtotime($h['date_edited'])) ?>
-                            </small>
-                        <?php endif; ?>
                     </td>
                     <td><strong><?= htmlspecialchars($h['item_code'] ?? '-') ?></strong></td>
                     <td><?= htmlspecialchars($h['item_description'] ?? '-') ?></td>
@@ -102,9 +97,6 @@
                             <strong><?= htmlspecialchars($h['lot_number']) ?></strong>
                         <?php else: ?>
                             <span class="text-muted">-</span>
-                        <?php endif; ?>
-                        <?php if (!empty($h['date_edited']) && !empty($h['old_lot_number'])): ?>
-                            <br><small class="text-muted">(old: <?= htmlspecialchars($h['old_lot_number']) ?>)</small>
                         <?php endif; ?>
                     </td>
                     <td>
@@ -461,3 +453,4 @@ document.querySelectorAll('.sortable').forEach(th => {
     });
 });
 </script>
+

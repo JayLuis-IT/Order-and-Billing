@@ -105,9 +105,6 @@
                     <td><?= htmlspecialchars($d['customer_name'] ?? '-') ?></td>
                     <td>
                         <?= htmlspecialchars($d['dr_number'] ?? '') ?: '<span class="text-muted">-</span>' ?>
-                        <?php if (!empty($d['old_dr_number'])): ?>
-                            <br><small style="color:#e6a800;font-weight:bold;">(old: <?= htmlspecialchars($d['old_dr_number']) ?>)</small>
-                        <?php endif; ?>
                     </td>
                     <td>
                         <?php if (!empty($d['si_number'])): ?>

@@ -65,8 +65,9 @@
 
 <!-- Weekly Delivery Graph -->
 <div class="card data-card" style="cursor: pointer;">
-    <div class="card-header">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
         <h6 class="mb-0"><i class="bi bi-bar-chart me-2"></i>Weekly Deliveries (Weeks <?= $weekFrom ?>–<?= $weekTo ?> &mdash; <?= $dateRange ?>) <small class="text-muted">— Click a bar to see details</small></h6>
+        <a href="?<?= http_build_query(array_filter(['controller' => 'warehouse', 'action' => 'exportReports', 'customer_id' => $selectedCustomer ?? '', 'week_offset' => $weekOffset ?? 0, 'sheet' => 'weekly'])) ?>" class="btn btn-sm btn-success" onclick="event.stopPropagation();"><i class="bi bi-file-earmark-excel me-1"></i>Export Excel</a>
     </div>
     <div class="card-body" style="height: 400px;">
         <canvas id="weeklyDeliveryChart"></canvas>
@@ -139,6 +140,8 @@ $filterPo = $_GET['po_filter'] ?? '';
 $filterItem = $_GET['item_filter'] ?? '';
 $filterStatus = $_GET['status_filter'] ?? '';
 $filterSearch = $_GET['search'] ?? '';
+$filterDateFrom = $_GET['date_from'] ?? '';
+$filterDateTo = $_GET['date_to'] ?? '';
 $poPage = max(1, intval($_GET['po_page'] ?? 1));
 $poPageSize = 10;
 
@@ -167,6 +170,12 @@ if ($filterStatus !== '') {
         return true;
     });
 }
+if ($filterDateFrom !== '') {
+    $filteredItems = array_filter($filteredItems, fn($i) => !empty($i['po_date']) && date('Y-m-d', strtotime($i['po_date'])) >= $filterDateFrom);
+}
+if ($filterDateTo !== '') {
+    $filteredItems = array_filter($filteredItems, fn($i) => !empty($i['po_date']) && date('Y-m-d', strtotime($i['po_date'])) <= $filterDateTo);
+}
 $filteredItems = array_values($filteredItems);
 $filteredTotal = count($filteredItems);
 $filteredTotalPages = max(1, ceil($filteredTotal / $poPageSize));
@@ -180,6 +189,8 @@ if ($filterSearch !== '') $baseUrl .= '&search=' . urlencode($filterSearch);
 if ($filterPo !== '') $baseUrl .= '&po_filter=' . urlencode($filterPo);
 if ($filterItem !== '') $baseUrl .= '&item_filter=' . urlencode($filterItem);
 if ($filterStatus !== '') $baseUrl .= '&status_filter=' . urlencode($filterStatus);
+if ($filterDateFrom !== '') $baseUrl .= '&date_from=' . urlencode($filterDateFrom);
+if ($filterDateTo !== '') $baseUrl .= '&date_to=' . urlencode($filterDateTo);
 if (!empty($_GET['lot_item_id'])) $baseUrl .= '&lot_item_id=' . urlencode($_GET['lot_item_id']);
 ?>
 
@@ -197,10 +208,12 @@ if (!empty($_GET['lot_item_id'])) $baseUrl .= '&lot_item_id=' . urlencode($_GET[
                 'po_filter' => $filterPo,
                 'item_filter' => $filterItem,
                 'status_filter' => $filterStatus,
+                'date_from' => $filterDateFrom,
+                'date_to' => $filterDateTo,
                 'lot_item_id' => $_GET['lot_item_id'] ?? '',
             ]));
             ?>
-            <a href="?<?= $exportParams ?>" class="btn btn-sm btn-success"><i class="bi bi-file-earmark-excel me-1"></i>Export Excel</a>
+            <button type="button" class="btn btn-sm btn-success" id="exportPreviewBtn"><i class="bi bi-file-earmark-excel me-1"></i>Export Excel</button>
         <form method="GET" class="d-flex gap-2 flex-wrap" id="poFilterForm">
             <input type="hidden" name="controller" value="warehouse">
             <input type="hidden" name="action" value="reports">
@@ -221,6 +234,23 @@ if (!empty($_GET['lot_item_id'])) $baseUrl .= '&lot_item_id=' . urlencode($_GET[
                     <option value="<?= htmlspecialchars(strtolower($itemName)) ?>" <?= $filterItem === strtolower($itemName) ? 'selected' : '' ?>><?= htmlspecialchars($itemName) ?></option>
                 <?php endforeach; ?>
             </select>
+            <div style="position:relative; width:200px;">
+                <input type="text" id="poDateRange" class="form-control form-control-sm" placeholder="Select Date Range" readonly style="width:100%; background-color:#fff; cursor:pointer;" title="Click to select PO date range" value="<?= htmlspecialchars(($filterDateFrom !== '' ? date('m/d/Y', strtotime($filterDateFrom)) : '') . ($filterDateTo !== '' ? ' - ' . date('m/d/Y', strtotime($filterDateTo)) : '')) ?>">
+                <input type="date" name="date_from" id="poDateFrom" value="<?= htmlspecialchars($filterDateFrom) ?>" style="position:absolute; top:0; left:0; width:100%; height:100%; opacity:0; pointer-events:none; border:0; z-index:-1;">
+                <input type="date" name="date_to" id="poDateTo" value="<?= htmlspecialchars($filterDateTo) ?>" style="position:absolute; top:0; left:0; width:100%; height:100%; opacity:0; pointer-events:none; border:0; z-index:-1;">
+                <div id="poCalendarPopup" style="display:none; position:absolute; top:calc(100% + 4px); left:0; z-index:1060; background:#fff; border:1px solid #dee2e6; border-radius:8px; box-shadow:0 6px 20px rgba(0,0,0,.18); padding:10px; width:270px;">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <button type="button" id="calPrev" class="btn btn-sm btn-light border-0"><i class="bi bi-chevron-left"></i></button>
+                        <strong id="calMonthLabel" style="font-size:.9rem;"></strong>
+                        <button type="button" id="calNext" class="btn btn-sm btn-light border-0"><i class="bi bi-chevron-right"></i></button>
+                    </div>
+                    <div style="display:grid; grid-template-columns:repeat(7,1fr); text-align:center; font-size:.7rem; font-weight:600; color:#6c757d; margin-bottom:2px;">
+                        <span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span>
+                    </div>
+                    <div id="calDays" style="display:grid; grid-template-columns:repeat(7,1fr); text-align:center; gap:2px;"></div>
+                    <div id="calHint" class="text-center mt-2" style="font-size:.78rem; color:#8a6d00; background:#fff8dc; border-radius:6px; padding:4px 6px;">Select the starting date</div>
+                </div>
+            </div>
             <select name="status_filter" class="form-select form-select-sm filter-select" style="width: 160px;" onchange="document.getElementById('poFilterForm').submit()">
                 <option value="">All Status</option>
                 <option value="completed" <?= $filterStatus === 'completed' ? 'selected' : '' ?>>Completed</option>
@@ -272,7 +302,7 @@ if (!empty($_GET['lot_item_id'])) $baseUrl .= '&lot_item_id=' . urlencode($_GET[
                     <tr>
                         <th>Customer</th>
                         <th>PO Number</th>
-                        <th>Item Code</th>
+                        <th>PO Date</th>
                         <th>Item</th>
                         <th class="text-end">PO Qty</th>
                         <th class="text-end">Delivered</th>
@@ -303,7 +333,7 @@ if (!empty($_GET['lot_item_id'])) $baseUrl .= '&lot_item_id=' . urlencode($_GET[
                             <tr>
                                 <td><?= htmlspecialchars($item['customer_name']) ?></td>
                                 <td><?= htmlspecialchars($item['customer_po_number']) ?></td>
-                                <td><?= htmlspecialchars($item['item_code'] ?? '') ?></td>
+                                <td><?= !empty($item['po_date']) ? date('Y-m-d', strtotime($item['po_date'])) : '' ?></td>
                                 <td><?= htmlspecialchars($item['item_description']) ?></td>
                                 <td class="text-end"><?= number_format($ordered) ?><?php if ($uomConv > 0): ?> <small class="text-muted">/ <?= number_format(intval($ordered / $uomConv)) ?> cs</small><?php endif; ?></td>
                                 <td class="text-end"><?= number_format($delivered) ?><?php if ($uomConv > 0): ?> <small class="text-muted">/ <?= number_format(intval($delivered / $uomConv)) ?> cs</small><?php endif; ?></td>
@@ -379,6 +409,7 @@ $pageLotData = array_slice($lotData, $lotOffset, $lotPageSize);
                 <?php endforeach; ?>
             </select>
         </form>
+        <a href="?<?= http_build_query(array_filter(['controller' => 'warehouse', 'action' => 'exportReports', 'customer_id' => $selectedCustomer ?? '', 'sheet' => 'stock', 'lot_item_id' => $selectedLotItem ?? ''])) ?>" class="btn btn-sm btn-success"><i class="bi bi-file-earmark-excel me-1"></i>Export Excel</a>
     </div>
     <div class="card-body">
         <?php if (empty($lotData)): ?>
@@ -462,6 +493,141 @@ document.addEventListener('DOMContentLoaded', function() {
         p.set('lot_item_id', lotSel.value);
         window.location = '?' + p.toString() + '#stock-on-hand';
     });
+
+    var _poSearchTimer;
+    var searchInput = document.querySelector('#poFilterForm input[name="search"]');
+    if (searchInput) {
+        if (sessionStorage.getItem('poItemSummaryScroll')) {
+            window.scrollTo(0, parseInt(sessionStorage.getItem('poItemSummaryScroll')));
+            sessionStorage.removeItem('poItemSummaryScroll');
+            if (searchInput.value) { searchInput.focus(); var _len = searchInput.value.length; searchInput.setSelectionRange(_len, _len); }
+        }
+        searchInput.addEventListener('input', function() {
+            clearTimeout(_poSearchTimer);
+            _poSearchTimer = setTimeout(function() {
+                sessionStorage.setItem('poItemSummaryScroll', window.scrollY);
+                document.getElementById('poFilterForm').submit();
+            }, 600);
+        });
+    }
+
+    // Custom two-step date range calendar with yellow highlights
+    var rangeInput = document.getElementById('poDateRange');
+    var dateFrom = document.getElementById('poDateFrom');
+    var dateTo = document.getElementById('poDateTo');
+    var calPopup = document.getElementById('poCalendarPopup');
+    var calDays = document.getElementById('calDays');
+    var calLabel = document.getElementById('calMonthLabel');
+    var calHint = document.getElementById('calHint');
+    var picking = 'from';
+    var pickStart = null;
+    var pickEnd = null;
+    var viewYear, viewMonth;
+    var monthNamesCal = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    var defaultPlaceholder = rangeInput.getAttribute('placeholder');
+
+    function pad2(n) { return (n < 10 ? '0' : '') + n; }
+    function ymd(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
+
+    function updateRangeDisplay() {
+        var from = dateFrom.value ? new Date(dateFrom.value + 'T00:00:00').toLocaleDateString('en-US') : '';
+        var to = dateTo.value ? new Date(dateTo.value + 'T00:00:00').toLocaleDateString('en-US') : '';
+        rangeInput.value = (from || to) ? (from + (to ? ' - ' + to : '')) : '';
+        rangeInput.placeholder = defaultPlaceholder;
+    }
+
+    function renderCalendar() {
+        calLabel.textContent = monthNamesCal[viewMonth] + ' ' + viewYear;
+        calHint.textContent = picking === 'from' ? 'Select the starting date' : 'Now select the ending date';
+        var firstDow = new Date(viewYear, viewMonth, 1).getDay();
+        var daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+        var todayYmd = ymd(new Date());
+        var html = '';
+        for (var i = 0; i < firstDow; i++) html += '<span></span>';
+        for (var d = 1; d <= daysInMonth; d++) {
+            var cur = viewYear + '-' + pad2(viewMonth + 1) + '-' + pad2(d);
+            var style = 'cursor:pointer; border-radius:6px; padding:4px 0; font-size:.8rem;';
+            var isStart = pickStart === cur;
+            var isEnd = pickStart !== null && pickEnd === cur;
+            if (pickStart && cur < pickStart) {
+                style += ' color:#ced4da; cursor:not-allowed;';
+            } else {
+                style += ' color:#212529;';
+            }
+            if (isStart || isEnd) {
+                style += ' background:#f6c344; font-weight:700;';
+            } else if (pickStart && pickEnd && cur > pickStart && cur < pickEnd) {
+                style += ' background:#fff3b0;';
+            } else if (cur === todayYmd) {
+                style += ' border:1px solid #f6c344;';
+            }
+            html += '<span class="cal-day" data-date="' + cur + '" style="' + style + '">' + d + '</span>';
+        }
+        calDays.innerHTML = html;
+        calDays.querySelectorAll('.cal-day').forEach(function(el) {
+            el.addEventListener('click', function() { selectDate(this.getAttribute('data-date')); });
+        });
+    }
+
+    function selectDate(dateStr) {
+        if (picking === 'from') {
+            pickStart = dateStr;
+            pickEnd = null;
+            dateFrom.value = dateStr;
+            dateTo.value = '';
+            picking = 'to';
+            var d = new Date(dateStr + 'T00:00:00');
+            viewYear = d.getFullYear();
+            viewMonth = d.getMonth();
+            renderCalendar();
+        } else {
+            if (pickStart && dateStr < pickStart) return;
+            pickEnd = dateStr;
+            dateTo.value = dateStr;
+            picking = 'from';
+            calPopup.style.display = 'none';
+            updateRangeDisplay();
+            document.getElementById('poFilterForm').submit();
+        }
+    }
+
+    rangeInput.addEventListener('click', function(e) {
+        e.stopPropagation();
+        if (calPopup.style.display === 'none') {
+            picking = 'from';
+            pickStart = null;
+            pickEnd = null;
+            dateFrom.value = '';
+            dateTo.value = '';
+            rangeInput.value = '';
+            rangeInput.placeholder = 'Select the starting date';
+            var now = new Date();
+            viewYear = now.getFullYear();
+            viewMonth = now.getMonth();
+            calPopup.style.display = '';
+            renderCalendar();
+        } else {
+            calPopup.style.display = 'none';
+        }
+    });
+
+    document.getElementById('calPrev').addEventListener('click', function(e) {
+        e.stopPropagation();
+        viewMonth--;
+        if (viewMonth < 0) { viewMonth = 11; viewYear--; }
+        renderCalendar();
+    });
+    document.getElementById('calNext').addEventListener('click', function(e) {
+        e.stopPropagation();
+        viewMonth++;
+        if (viewMonth > 11) { viewMonth = 0; viewYear++; }
+        renderCalendar();
+    });
+    calPopup.addEventListener('click', function(e) { e.stopPropagation(); });
+    document.addEventListener('click', function(e) {
+        if (!calPopup.contains(e.target) && e.target !== rangeInput) calPopup.style.display = 'none';
+    });
+
     var rawStats = <?= json_encode(array_values($weeklyStats ?? [])) ?>;
     var weeklyDetails = <?= json_encode($weeklyDetails ?? []) ?>;
 
@@ -613,3 +779,128 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 </script>
+
+<!-- Export Preview Modal -->
+<div class="modal fade" id="exportPreviewModal">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-file-earmark-excel me-2"></i>Export PO Item Summary</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <small class="text-muted">Preview (first 100 rows)</small>
+                    <small class="text-muted" id="exportPreviewCount"></small>
+                </div>
+                <div class="table-responsive border rounded" style="max-height: 450px; overflow: auto;">
+                    <table class="table table-sm table-bordered mb-0" id="exportPreviewTable">
+                        <thead class="table-light" style="position: sticky; top: 0;">
+                            <tr id="exportPreviewHead"></tr>
+                        </thead>
+                        <tbody id="exportPreviewBody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-success" id="exportDownloadBtn"><i class="bi bi-download me-1"></i>Download Excel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var exportData = <?= json_encode(array_map(function($i) {
+        return [
+            'customer' => $i['customer_name'] ?? '',
+            'po_number' => $i['customer_po_number'] ?? '',
+            'po_date' => $i['po_date'] ? date('Y-m-d', strtotime($i['po_date'])) : '',
+            'item' => $i['item_description'] ?? '',
+            'po_qty' => intval($i['po_qty']),
+            'delivered_quantity' => intval($i['delivered_quantity']),
+            'uom_conversion' => intval($i['uom_conversion'] ?? 0),
+            'manually_closed' => intval($i['manually_closed'] ?? 0),
+            'po_manually_closed' => intval($i['po_manually_closed'] ?? 0),
+        ];
+    }, $filteredItems)); ?>;
+    var exportBaseParams = '<?= $exportParams ?>';
+    var exportDateFrom = '<?= htmlspecialchars($filterDateFrom) ?>';
+    var exportDateTo = '<?= htmlspecialchars($filterDateTo) ?>';
+    var cols = ['customer', 'po_number', 'po_date', 'item', 'order_qty', 'delivered_qty', 'balance_qty', 'status'];
+    var simpleKeys = ['customer', 'po_number', 'po_date', 'item', 'status'];
+    var pairKeys = ['order_qty', 'delivered_qty', 'balance_qty'];
+    var colLabels = { customer: 'Customer', po_number: 'PO#', po_date: 'PO Date', item: 'Item Name', order_qty: 'Order Qty', delivered_qty: 'Delivered Qty', balance_qty: 'Balance Qty', status: 'Status' };
+
+    function statusOf(item) {
+        if (item.delivered_quantity >= item.po_qty) return 'Closed';
+        if (item.manually_closed === 1 || item.po_manually_closed === 1) return 'Manually Closed';
+        if (item.delivered_quantity > 0) return 'Partial';
+        return 'Pending';
+    }
+
+    function cellValues(item) {
+        var conv = item.uom_conversion;
+        var values = {
+            customer: item.customer,
+            po_number: item.po_number,
+            po_date: item.po_date,
+            item: item.item,
+            status: statusOf(item)
+        };
+        pairKeys.forEach(function(k) {
+            var pcs = k === 'order_qty' ? item.po_qty : (k === 'delivered_qty' ? item.delivered_quantity : Math.max(0, item.po_qty - item.delivered_quantity));
+            var cs = conv > 0 ? Math.floor(pcs / conv) : pcs;
+            values[k] = [pcs, cs];
+        });
+        var cells = [];
+        cols.forEach(function(c) {
+            if (simpleKeys.indexOf(c) >= 0) {
+                cells.push({ col: c, value: String(values[c]) });
+            } else {
+                cells.push({ col: c, value: values[c][0] + ' pcs' });
+                cells.push({ col: c, value: values[c][1] + ' cs' });
+            }
+        });
+        return cells;
+    }
+
+    function renderPreview() {
+        var head = document.getElementById('exportPreviewHead');
+        var body = document.getElementById('exportPreviewBody');
+        head.innerHTML = '<tr>' + cols.map(function(c) {
+            return simpleKeys.indexOf(c) >= 0
+                ? '<th>' + colLabels[c] + '</th>'
+                : '<th colspan="2" class="text-center">' + colLabels[c] + '</th>';
+        }).join('') + '</tr>';
+
+        var data = exportData.slice().sort(function(a, b) {
+            return String(a.customer).localeCompare(String(b.customer));
+        });
+        document.getElementById('exportPreviewCount').textContent = data.length + ' rows';
+        var shown = data.slice(0, 100);
+        function esc(v) { var d = document.createElement('div'); d.textContent = v; return d.innerHTML; }
+        body.innerHTML = shown.map(function(item) {
+            var vals = cellValues(item);
+            return '<tr>' + vals.map(function(cell) {
+                var isBoundaryDate = cell.col === 'po_date' && ((exportDateFrom !== '' && item.po_date === exportDateFrom) || (exportDateTo !== '' && item.po_date === exportDateTo));
+                return '<td' + (isBoundaryDate ? ' style="background-color:#fff3b0;"' : '') + '>' + esc(cell.value) + '</td>';
+            }).join('') + '</tr>';
+        }).join('');
+    }
+
+    document.getElementById('exportPreviewBtn').addEventListener('click', function() {
+        var modal = new bootstrap.Modal(document.getElementById('exportPreviewModal'));
+        modal.show();
+    });
+    document.getElementById('exportPreviewModal').addEventListener('shown.bs.modal', renderPreview);
+
+    document.getElementById('exportDownloadBtn').addEventListener('click', function() {
+        var params = new URLSearchParams(exportBaseParams);
+        params.set('sheet', 'po_items');
+        window.location.href = 'index.php?' + params.toString();
+    });
+});
+</script>
+

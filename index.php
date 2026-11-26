@@ -3,6 +3,10 @@ require_once __DIR__ . '/core/Config.php';
 \App\Core\Config::init();
 require_once __DIR__ . '/app/helpers/format_helper.php';
 
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('Expires: 0');
+
 spl_autoload_register(function ($class) {
     $paths = [
         'C:\xampp\htdocs\order-billing-system\core' => 'App\Core',

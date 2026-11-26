@@ -86,9 +86,6 @@
                         <?php else: ?>
                             <span class="text-muted">-</span>
                         <?php endif; ?>
-                        <?php if (!empty($h['date_edited']) && !empty($h['old_lot_number'])): ?>
-                            <br><small class="text-muted">(old: <?= htmlspecialchars($h['old_lot_number']) ?>)</small>
-                        <?php endif; ?>
                     </td>
                     <td>
                         <?= intval($h['computed_prev_lot_qty'] ?? $h['previous_quantity'] ?? 0) ?>
@@ -97,9 +94,6 @@
                         <span class="text-success">+<?= formatQty($h['added_quantity']) ?></span>
                         <?php if (!empty($h['pcs_per_case'])): ?>
                             <br><small class="text-muted" title="PCS per Case">/ <?= htmlspecialchars($h['pcs_per_case']) ?> cs</small>
-                        <?php endif; ?>
-                        <?php if (!empty($h['date_edited']) && $h['old_added_quantity'] !== null): ?>
-                            <br><small class="text-muted">(old: +<?= $h['old_added_quantity'] ?>)</small>
                         <?php endif; ?>
                     </td>
                     <td><strong><?= intval($h['computed_new_lot_qty'] ?? $h['new_quantity'] ?? 0) ?></strong></td>

@@ -123,12 +123,19 @@ class WarehouseModel extends BaseModel {
     }
 
     public function getPurchaseOrders() {
-        $sql = "SELECT po.*, c.customer_name, u.full_name as requested_by_name 
-                FROM purchase_orders po 
-                LEFT JOIN customers c ON po.customer_id = c.customer_id 
-                LEFT JOIN users u ON po.requested_by = u.user_id 
+        $sql = "SELECT po.*, c.customer_name, u.full_name as requested_by_name
+                FROM purchase_orders po
+                LEFT JOIN customers c ON po.customer_id = c.customer_id
+                LEFT JOIN users u ON po.requested_by = u.user_id
                 WHERE po.`remove` = 0
-                ORDER BY po.last_update DESC";
+                ORDER BY CASE
+                        WHEN po.manually_closed = 1
+                            OR (SELECT COALESCE(SUM(poiS.delivered_quantity), 0) FROM purchase_order_items poiS WHERE poiS.po_id = po.po_id) >= (SELECT COALESCE(SUM(poiQ.quantity), 0) FROM purchase_order_items poiQ WHERE poiQ.po_id = po.po_id)
+                            OR NOT EXISTS (SELECT 1 FROM purchase_order_items cci WHERE cci.po_id = po.po_id AND cci.manually_closed = 0) THEN 2
+                        WHEN (SELECT COALESCE(SUM(poiD.delivered_quantity), 0) FROM purchase_order_items poiD WHERE poiD.po_id = po.po_id) > 0 THEN 0
+                        ELSE 1
+                    END ASC,
+                    po.last_update DESC";
         $stmt = self::getConnection()->prepare($sql);
         $stmt->execute();
         return $stmt->fetchAll();
@@ -798,16 +805,55 @@ class WarehouseModel extends BaseModel {
         }
         if (!empty($filters['delivery_status'])) {
             if ($filters['delivery_status'] === 'open') {
-                $sql .= " AND po.delivered_quantity < po.total_quantity";
+                $sql .= " AND po.manually_closed = 0 AND po.delivered_quantity < po.total_quantity
+                          AND EXISTS (SELECT 1 FROM purchase_order_items oc WHERE oc.po_id = po.po_id AND oc.manually_closed = 0)";
             } elseif ($filters['delivery_status'] === 'closed') {
-                $sql .= " AND po.delivered_quantity >= po.total_quantity";
+                $sql .= " AND (po.manually_closed = 1 OR po.delivered_quantity >= po.total_quantity
+                          OR NOT EXISTS (SELECT 1 FROM purchase_order_items cc WHERE cc.po_id = po.po_id AND cc.manually_closed = 0))";
             }
         }
 
-        $sql .= " ORDER BY po.last_update DESC";
+        $sql .= " ORDER BY CASE
+                        WHEN po.manually_closed = 1
+                            OR (SELECT COALESCE(SUM(poiS2.delivered_quantity), 0) FROM purchase_order_items poiS2 WHERE poiS2.po_id = po.po_id) >= (SELECT COALESCE(SUM(poiQ2.quantity), 0) FROM purchase_order_items poiQ2 WHERE poiQ2.po_id = po.po_id)
+                            OR NOT EXISTS (SELECT 1 FROM purchase_order_items cci2 WHERE cci2.po_id = po.po_id AND cci2.manually_closed = 0) THEN 2
+                        WHEN (SELECT COALESCE(SUM(poiD2.delivered_quantity), 0) FROM purchase_order_items poiD2 WHERE poiD2.po_id = po.po_id) > 0 THEN 0
+                        ELSE 1
+                    END ASC,
+                    po.last_update DESC";
         $stmt = self::getConnection()->prepare($sql);
         $stmt->execute($params);
         return $stmt->fetchAll();
+    }
+
+    public function closePurchaseOrder($poId) {
+        $conn = self::getConnection();
+        $stmt = $conn->prepare("UPDATE purchase_orders SET manually_closed = 1, closed_at = NOW() WHERE po_id = :po_id AND `remove` = 0");
+        $stmt->execute(['po_id' => $poId]);
+        $conn->prepare("UPDATE purchase_order_items SET manually_closed = 1, closed_at = NOW() WHERE po_id = :po_id AND manually_closed = 0")
+            ->execute(['po_id' => $poId]);
+        return $stmt->rowCount() > 0;
+    }
+
+    public function reopenPurchaseOrder($poId) {
+        $conn = self::getConnection();
+        $stmt = $conn->prepare("UPDATE purchase_orders SET manually_closed = 0, closed_at = NULL WHERE po_id = :po_id AND `remove` = 0");
+        $stmt->execute(['po_id' => $poId]);
+        $conn->prepare("UPDATE purchase_order_items SET manually_closed = 0, closed_at = NULL WHERE po_id = :po_id")
+            ->execute(['po_id' => $poId]);
+        return $stmt->rowCount() > 0;
+    }
+
+    public function closePurchaseOrderItem($poiId) {
+        $stmt = self::getConnection()->prepare("UPDATE purchase_order_items SET manually_closed = 1, closed_at = NOW() WHERE poi_id = :poi_id");
+        $stmt->execute(['poi_id' => $poiId]);
+        return $stmt->rowCount() > 0;
+    }
+
+    public function reopenPurchaseOrderItem($poiId) {
+        $stmt = self::getConnection()->prepare("UPDATE purchase_order_items SET manually_closed = 0, closed_at = NULL WHERE poi_id = :poi_id");
+        $stmt->execute(['poi_id' => $poiId]);
+        return $stmt->rowCount() > 0;
     }
 
     public function getDeliveriesFiltered($filters = []) {
@@ -1010,7 +1056,9 @@ class WarehouseModel extends BaseModel {
                 FROM purchase_orders po 
                 LEFT JOIN customers c ON po.customer_id = c.customer_id 
                 LEFT JOIN users u ON po.requested_by = u.user_id 
-                WHERE po.`remove` = 0 
+                WHERE po.`remove` = 0
+                AND po.manually_closed = 0
+                AND EXISTS (SELECT 1 FROM purchase_order_items oi2 WHERE oi2.po_id = po.po_id AND oi2.manually_closed = 0)
                 AND po.delivered_quantity < po.total_quantity";
         $params = [];
 
@@ -2126,7 +2174,9 @@ class WarehouseModel extends BaseModel {
                 FROM purchase_orders po 
                 LEFT JOIN customers c ON po.customer_id = c.customer_id 
                 LEFT JOIN users u ON po.requested_by = u.user_id 
-                WHERE po.`remove` = 0 
+                WHERE po.`remove` = 0
+                AND po.manually_closed = 0
+                AND EXISTS (SELECT 1 FROM purchase_order_items oi WHERE oi.po_id = po.po_id AND oi.manually_closed = 0)
                 AND po.produced_quantity > po.delivered_quantity
                 ORDER BY po.last_update DESC";
         $stmt = self::getConnection()->prepare($sql);
@@ -3056,6 +3106,8 @@ class WarehouseModel extends BaseModel {
                 FROM purchase_orders po
                 JOIN customers c ON c.customer_id = po.customer_id
                 WHERE po.`remove` = 0
+                AND po.manually_closed = 0
+                AND EXISTS (SELECT 1 FROM purchase_order_items ai WHERE ai.po_id = po.po_id AND ai.manually_closed = 0)
                 ORDER BY po.date_created DESC";
         $stmt = self::getConnection()->prepare($sql);
         $stmt->execute();
